@@ -31,6 +31,7 @@ PlasmoidItem {
     property bool includeStatus: Plasmoid.configuration.includeStatus === undefined ? false : Plasmoid.configuration.includeStatus
     property bool showCostSummary: Plasmoid.configuration.showCostSummary === undefined ? true : Plasmoid.configuration.showCostSummary
     property int refreshSeconds: Math.max(10, Plasmoid.configuration.refreshInterval || 60)
+    property string selectedEntryKey: ""
 
     preferredRepresentation: compactRepresentation
     toolTipMainText: "KodexBar"
@@ -44,15 +45,133 @@ PlasmoidItem {
         return panelText()
     }
 
+    function entryKey(entry) {
+        if (!entry) {
+            return ""
+        }
+        return String(entry.provider || "provider") + "|" + String(entry.account || "") + "|" + String(entry.source || "")
+    }
+
+    function selectedEntry() {
+        for (var i = 0; i < entries.length; i++) {
+            if (entryKey(entries[i]) === selectedEntryKey) {
+                return entries[i]
+            }
+        }
+        return entries.length > 0 ? entries[0] : null
+    }
+
+    function keepSelectionValid() {
+        if (entries.length === 0) {
+            selectedEntryKey = ""
+            return
+        }
+        for (var i = 0; i < entries.length; i++) {
+            if (entryKey(entries[i]) === selectedEntryKey) {
+                return
+            }
+        }
+        selectedEntryKey = entryKey(entries[0])
+    }
+
+    function paceText(entry) {
+        var pace = entry && entry.pace
+        if (!pace || typeof pace !== "object") {
+            return ""
+        }
+        var parts = []
+        if (pace.willLastToReset === true) {
+            parts.push(i18n("On track"))
+        } else if (pace.willLastToReset === false) {
+            parts.push(i18n("May exhaust before reset"))
+        } else if (typeof pace.headroomRatio === "number" && isFinite(pace.headroomRatio)) {
+            parts.push(pace.headroomRatio >= 1 ? i18n("On track") : i18n("May exhaust before reset"))
+        }
+        if (typeof pace.headroomRatio === "number" && isFinite(pace.headroomRatio)) {
+            parts.push(i18n("%1× headroom", Number(pace.headroomRatio).toLocaleString(Qt.locale(), "f", 1)))
+        }
+        if (typeof pace.expectedUsage === "number" && isFinite(pace.expectedUsage)) {
+            parts.push(i18n("Expected usage %1%", Math.round(Math.max(0, pace.expectedUsage) * 100)))
+        }
+        if (typeof pace.reserve === "number" && isFinite(pace.reserve)) {
+            parts.push(i18n("Reserve %1%", Math.round(Math.max(0, pace.reserve) * 100)))
+        }
+        if (typeof pace.exhaustionEstimate === "string" && pace.exhaustionEstimate.length > 0) {
+            parts.push(i18n("Estimated exhaustion %1", pace.exhaustionEstimate))
+        }
+        return parts.join(" · ")
+    }
+
+    function humanWindowTitle(title) {
+        var value = String(title || "")
+        return value.replace(/[-_]+/g, " ").replace(/\b\w/g, function(letter) { return letter.toUpperCase() })
+    }
+
+    function cardRows(entry) {
+        if (!entry || entry.errorMessage) {
+            return []
+        }
+        var provider = String(entry.provider || "").toLowerCase()
+        if (provider === "deepseek") {
+            return entry.creditsRemaining !== null && entry.creditsRemaining !== undefined
+                ? [{ label: i18n("Balance"), value: formatCurrency(entry.creditsRemaining, entry.creditsCurrencyCode || "USD"), color: Kirigami.Theme.textColor }]
+                : []
+        }
+        var rows = []
+        function add(label, left) {
+            if (left !== null && left !== undefined && !isNaN(left)) {
+                rows.push({ label: label, value: Math.round(root.usedPercent(left)) + "%", color: root.usageAccent(left) })
+            }
+        }
+        add(i18n("5h"), entry.primaryPercentLeft)
+        add(i18n("Weekly"), entry.secondaryPercentLeft)
+        if (provider === "opencode" || provider === "opencodego") {
+            add(i18n("Monthly"), entry.tertiaryPercentLeft)
+        }
+        return rows
+    }
+
+    function cardSummary(entry) {
+        var rows = cardRows(entry)
+        var values = []
+        for (var i = 0; i < rows.length; i++) values.push(rows[i].label + " " + rows[i].value)
+        return values.join(" · ")
+    }
+
+    function windowTitle(window, fallback) {
+        if (window && typeof window.windowMinutes === "number") {
+            if (window.windowMinutes === 300) return i18n("5-hour")
+            if (window.windowMinutes === 10080) return i18n("Weekly")
+            if (window.windowMinutes === 43200) return i18n("Monthly")
+        }
+        return fallback
+    }
+
+    function metadataChips(entry) {
+        var chips = []
+        if (entry && entry.provider) chips.push(i18n("Provider: %1", entry.name || entry.provider))
+        if (entry && entry.resetCredits && typeof entry.resetCredits.availableCount === "number") {
+            var count = entry.resetCredits.availableCount
+            chips.push(count === 1 ? i18n("1 reset credit") : i18n("%1 reset credits", formatCredits(count)))
+        }
+        if (entry && entry.plan) chips.push(i18n("Login: %1", entry.plan))
+        if (entry && entry.source) chips.push(i18n("Source: %1", entry.source))
+        if (entry && entry.confidence && entry.confidence !== "unknown") chips.push(i18n("Confidence: %1", humanWindowTitle(entry.confidence)))
+        return chips
+    }
+
     function panelText() {
         if (entries.length === 0) {
             return loading ? i18n("Loading") : i18n("No data")
         }
-        var first = null
-        for (var i = 0; i < entries.length; i++) {
-            if (!entries[i].errorMessage && entries[i].rows.length > 0) {
-                first = entries[i]
-                break
+        var first = selectedEntry()
+        if (first && (first.errorMessage || !first.rows || first.rows.length === 0)) {
+            first = null
+            for (var i = 0; i < entries.length; i++) {
+                if (!entries[i].errorMessage && entries[i].rows.length > 0) {
+                    first = entries[i]
+                    break
+                }
             }
         }
         if (first === null) {
@@ -513,17 +632,12 @@ PlasmoidItem {
             return []
         }
         var rows = []
-        if (summary.todayCost !== null || summary.todayTokens !== null) {
-            rows.push({
-                label: i18n("Today"),
-                value: formatCostAndTokens(summary.todayCost, summary.todayTokens, summary.currencyCode)
-            })
+        var days = summary.historyDays || 30
+        if (summary.totalTokens !== null && summary.totalTokens !== undefined) {
+            rows.push({ label: i18np("1-day tokens", "%1-day tokens", days), value: formatTokenCount(summary.totalTokens) })
         }
-        if (summary.totalCost !== null || summary.totalTokens !== null) {
-            rows.push({
-                label: i18np("Last day", "Last %1 days", summary.historyDays || 30),
-                value: formatCostAndTokens(summary.totalCost, summary.totalTokens, summary.currencyCode)
-            })
+        if (summary.totalCost !== null && summary.totalCost !== undefined) {
+            rows.push({ label: i18np("1-day estimated cost", "%1-day estimated cost", days), value: formatCurrency(summary.totalCost, summary.currencyCode) })
         }
         return rows
     }
@@ -789,11 +903,13 @@ PlasmoidItem {
         var providerCost = usage.providerCost && typeof usage.providerCost === "object" ? usage.providerCost : null
         var status = entry.status && typeof entry.status === "object" ? entry.status : null
         var rows = []
-        var windows = [
-            { title: i18n("Session"), data: primary },
-            { title: i18n("Weekly"), data: secondary },
-            { title: i18n("Extra"), data: tertiary }
-        ]
+        var additionalRows = []
+        var providerKey = String(entry.provider || "").toLowerCase()
+        var windows = providerKey === "deepseek" ? []
+            : (providerKey === "opencode" || providerKey === "opencodego")
+            ? [{ title: windowTitle(primary, i18n("Primary")), data: primary }, { title: windowTitle(secondary, i18n("Weekly")), data: secondary }, { title: windowTitle(tertiary, i18n("Monthly")), data: tertiary }]
+            : [{ title: windowTitle(primary, i18n("5-hour")), data: primary }, { title: windowTitle(secondary, i18n("Weekly")), data: secondary }]
+
         for (var i = 0; i < windows.length; i++) {
             var left = percentLeft(windows[i].data)
             if (left !== null) {
@@ -812,10 +928,16 @@ PlasmoidItem {
             if (!extra || !extra.window) {
                 continue
             }
+            var extraTitle = extra.title || i18n("Extra")
+            var normalizedExtraTitle = String(extraTitle).toLowerCase()
+            if (normalizedExtraTitle === "session" || normalizedExtraTitle === "5-hour" || normalizedExtraTitle === "primary"
+                    || normalizedExtraTitle === "weekly" || normalizedExtraTitle === "monthly" || normalizedExtraTitle === "tertiary") {
+                continue
+            }
             var extraLeft = percentLeft(extra.window)
             if (extraLeft !== null || resetAt(extra.window)) {
-                rows.push({
-                    title: extra.title || i18n("Extra"),
+                additionalRows.push({
+                    title: extraTitle,
                     percentLeft: extra.usageKnown === false ? null : extraLeft,
                     resetsAt: resetAt(extra.window),
                     detail: windowDetail(extra.window, extra.usageKnown),
@@ -824,9 +946,6 @@ PlasmoidItem {
             }
         }
         var costRow = providerCostRow(providerCost)
-        if (costRow !== null) {
-            rows.push(costRow)
-        }
         return {
             provider: entry.provider,
             name: providerName(entry.provider),
@@ -834,14 +953,26 @@ PlasmoidItem {
             source: entry.source,
             account: entry.account || usage.accountEmail || identity.accountEmail || "",
             plan: usage.loginMethod || identity.loginMethod || dashboard.accountPlan || "",
-            primaryPercentLeft: displayPercentLeft(entry.provider, primary, secondary),
-            primaryResetsAt: resetAt(primary),
-            secondaryPercentLeft: percentLeft(secondary),
-            secondaryResetsAt: resetAt(secondary),
+            primaryPercentLeft: providerKey === "deepseek" ? null : displayPercentLeft(entry.provider, primary, secondary),
+            primaryResetsAt: providerKey === "deepseek" ? null : resetAt(primary),
+            secondaryPercentLeft: providerKey === "deepseek" ? null : percentLeft(secondary),
+            secondaryResetsAt: providerKey === "deepseek" ? null : resetAt(secondary),
+            tertiaryPercentLeft: providerKey === "deepseek" ? null : percentLeft(tertiary),
             creditsRemaining: credits ? credits.remaining : (typeof dashboard.creditsRemaining === "number" ? dashboard.creditsRemaining : null),
             codeReviewRemainingPercent: typeof dashboard.codeReviewRemainingPercent === "number" ? dashboard.codeReviewRemainingPercent : null,
             dashboardSummary: dashboardSummary(dashboard),
+            pace: usage.pace && typeof usage.pace === "object" ? usage.pace
+                : (usage.paceData && typeof usage.paceData === "object" ? usage.paceData
+                : (primary && primary.pace && typeof primary.pace === "object" ? primary.pace
+                : (secondary && secondary.pace && typeof secondary.pace === "object" ? secondary.pace
+                : (entry.pace && typeof entry.pace === "object" ? entry.pace : null)))),
+
+            resetCredits: usage.codexResetCredits && typeof usage.codexResetCredits === "object" ? usage.codexResetCredits : null,
+            confidence: usage.dataConfidence || entry.dataConfidence || usage.confidence || entry.confidence || (entry.meta && entry.meta.confidence) || "",
+            creditsCurrencyCode: credits && credits.currencyCode ? credits.currencyCode : (usage.currencyCode || "USD"),
             rows: rows,
+            additionalRows: providerKey === "deepseek" ? [] : additionalRows,
+            providerCostRow: costRow,
             updatedAt: usage.updatedAt || entry.updatedAt || "",
             status: entry.status,
             statusIndicator: status ? (status.indicator || "unknown") : "",
@@ -957,58 +1088,72 @@ PlasmoidItem {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
 
-                RowLayout {
-                    spacing: Kirigami.Units.smallSpacing
+                QQC2.ScrollView {
                     Layout.fillWidth: true
+                    Layout.preferredHeight: Kirigami.Units.gridUnit * 4.2
+                    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded
+                    QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff
 
-                    Repeater {
-                        model: root.entries.length > 0 ? root.entries : [{ name: "KodexBar", provider: "kodexbar", primaryPercentLeft: null }]
+                    Row {
+                        id: accountCards
+                        spacing: Kirigami.Units.smallSpacing
+                        height: parent.height
 
-                        delegate: Rectangle {
-                            readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
-                            Layout.preferredWidth: Math.max(Kirigami.Units.gridUnit * 4.25, chipLabel.implicitWidth + Kirigami.Units.largeSpacing * 2)
-                            Layout.preferredHeight: Kirigami.Units.gridUnit * 3.55
-                            radius: Kirigami.Units.cornerRadius
-                            color: index === 0 ? Kirigami.Theme.highlightColor : "transparent"
-                            opacity: modelData.errorMessage ? 0.62 : 1
+                        Repeater {
+                            model: root.entries
+                            delegate: Rectangle {
+                                readonly property bool selected: root.entryKey(modelData) === root.selectedEntryKey
+                                readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
+                                width: Kirigami.Units.gridUnit * 6.2
+                                height: Kirigami.Units.gridUnit * 3.55
+                                radius: Kirigami.Units.cornerRadius
+                                color: selected ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.16) : Kirigami.Theme.backgroundColor
+                                border.width: selected ? 1 : 0
+                                border.color: Kirigami.Theme.highlightColor
+                                opacity: modelData.errorMessage ? 0.62 : 1
 
-                            ColumnLayout {
-                                anchors.fill: parent
-                                anchors.margins: Kirigami.Units.smallSpacing / 1.5
-                                spacing: Kirigami.Units.smallSpacing / 2
-
-                                Kirigami.Icon {
-                                    source: root.providerIconSource(modelData.provider)
-                                    isMask: true
-                                    color: index === 0 ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
-                                    implicitWidth: Kirigami.Units.iconSizes.small
-                                    implicitHeight: Kirigami.Units.iconSizes.small
-                                    Layout.alignment: Qt.AlignHCenter
+                                MouseArea {
+                                    anchors.fill: parent
+                                    onClicked: root.selectedEntryKey = root.entryKey(modelData)
+                                    cursorShape: Qt.PointingHandCursor
                                 }
-
-                                PlasmaComponents.Label {
-                                    id: chipLabel
-                                    text: modelData.name || modelData.provider
-                                    horizontalAlignment: Text.AlignHCenter
-                                    font.pointSize: Kirigami.Theme.smallFont.pointSize
-                                    font.weight: index === 0 ? Font.DemiBold : Font.Normal
-                                    color: index === 0 ? Kirigami.Theme.highlightedTextColor : Kirigami.Theme.textColor
-                                    elide: Text.ElideRight
-                                    Layout.fillWidth: true
-                                }
-
-                                Rectangle {
-                                    Layout.fillWidth: true
-                                    Layout.preferredHeight: 4
-                                    radius: height / 2
-                                    color: Qt.rgba(Kirigami.Theme.disabledTextColor.r, Kirigami.Theme.disabledTextColor.g, Kirigami.Theme.disabledTextColor.b, 0.28)
-                                    clip: true
-
-                                    Rectangle {
-                                        width: parent.width * used / 100
-                                        height: parent.height
-                                        radius: parent.radius
-                                        color: index === 0 ? Kirigami.Theme.highlightedTextColor : root.usageAccent(modelData.primaryPercentLeft)
+                                ColumnLayout {
+                                    anchors.fill: parent
+                                    anchors.margins: Kirigami.Units.smallSpacing
+                                    spacing: Kirigami.Units.smallSpacing / 2
+                                    Kirigami.Icon {
+                                        source: root.providerIconSource(modelData.provider)
+                                        isMask: true
+                                        color: Kirigami.Theme.textColor
+                                        implicitWidth: Kirigami.Units.iconSizes.small
+                                        implicitHeight: Kirigami.Units.iconSizes.small
+                                        Layout.alignment: Qt.AlignHCenter
+                                    }
+                                    PlasmaComponents.Label {
+                                        text: modelData.name || modelData.provider
+                                        horizontalAlignment: Text.AlignHCenter
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                        font.weight: selected ? Font.DemiBold : Font.Normal
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                    PlasmaComponents.Label {
+                                        text: root.showEmailInWidget && modelData.account ? modelData.account : ""
+                                        visible: text.length > 0
+                                        horizontalAlignment: Text.AlignHCenter
+                                        color: Kirigami.Theme.disabledTextColor
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                    Repeater {
+                                        model: root.cardRows(modelData)
+                                        delegate: RowLayout {
+                                            spacing: Kirigami.Units.smallSpacing / 2
+                                            Layout.fillWidth: true
+                                            PlasmaComponents.Label { text: modelData.label; color: Kirigami.Theme.disabledTextColor; font.pointSize: Kirigami.Theme.smallFont.pointSize; Layout.fillWidth: true }
+                                            PlasmaComponents.Label { text: modelData.value; color: modelData.color; font.pointSize: Kirigami.Theme.smallFont.pointSize; font.weight: Font.DemiBold }
+                                        }
                                     }
                                 }
                             }
@@ -1016,13 +1161,11 @@ PlasmoidItem {
                     }
                 }
 
-                QQC2.ToolButton {
-                    icon.name: "view-refresh"
-                    display: QQC2.AbstractButton.IconOnly
-                    enabled: !root.loading
-                    text: i18n("Refresh")
-                    onClicked: root.refresh()
-                }
+            }
+
+            Kirigami.Separator {
+                visible: root.entries.length > 0
+                Layout.fillWidth: true
             }
 
             PlasmaComponents.Label {
@@ -1059,7 +1202,7 @@ PlasmoidItem {
                     spacing: Kirigami.Units.largeSpacing
 
                     Repeater {
-                        model: root.entries
+                        model: root.selectedEntry() ? [root.selectedEntry()] : []
 
                         delegate: ColumnLayout {
                             Layout.fillWidth: true
@@ -1067,51 +1210,92 @@ PlasmoidItem {
 
                             RowLayout {
                                 Layout.fillWidth: true
-
+                                spacing: Kirigami.Units.smallSpacing
+                                Kirigami.Icon {
+                                    source: root.providerIconSource(modelData.provider)
+                                    isMask: true
+                                    color: Kirigami.Theme.textColor
+                                    implicitWidth: Kirigami.Units.iconSizes.medium
+                                    implicitHeight: Kirigami.Units.iconSizes.medium
+                                }
                                 ColumnLayout {
-                                    spacing: Kirigami.Units.smallSpacing
                                     Layout.fillWidth: true
-
+                                    spacing: 0
                                     Kirigami.Heading {
                                         text: modelData.name || modelData.provider
                                         level: 2
                                         Layout.fillWidth: true
                                     }
-
                                     PlasmaComponents.Label {
-                                        text: root.generatedAt.length > 0 ? i18n("Updated %1", root.generatedAt) : ""
-                                        color: Kirigami.Theme.disabledTextColor
+                                        text: root.showEmailInWidget && modelData.account ? modelData.account : ""
+                                        visible: text.length > 0
+                                        font.weight: Font.DemiBold
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                    PlasmaComponents.Label {
+                                        text: root.statusText(modelData.statusIndicator, modelData.statusDescription)
+                                        visible: text.length > 0
+                                        color: root.statusColor(modelData.statusIndicator)
+                                        elide: Text.ElideRight
+                                        Layout.fillWidth: true
+                                    }
+                                    PlasmaComponents.Label {
+                                        text: root.paceText(modelData)
+                                        visible: text.length > 0 && String(modelData.provider || "").toLowerCase() !== "deepseek"
+                                        color: root.usageAccent(modelData.primaryPercentLeft)
                                         elide: Text.ElideRight
                                         Layout.fillWidth: true
                                     }
                                 }
+                            }
 
-                                PlasmaComponents.Label {
-                                    text: modelData.source || ""
-                                    color: Kirigami.Theme.disabledTextColor
-                                    visible: text.length > 0
-                                    Layout.alignment: Qt.AlignBottom
+                            Flow {
+                                Layout.fillWidth: true
+                                spacing: Kirigami.Units.smallSpacing / 2
+                                visible: root.metadataChips(modelData).length > 0
+                                Repeater {
+                                    model: root.metadataChips(modelData)
+                                    delegate: Rectangle {
+                                        width: chipText.implicitWidth + Kirigami.Units.smallSpacing * 2
+                                        height: chipText.implicitHeight + Kirigami.Units.smallSpacing
+                                        radius: Kirigami.Units.cornerRadius
+                                        color: Qt.rgba(Kirigami.Theme.disabledTextColor.r, Kirigami.Theme.disabledTextColor.g, Kirigami.Theme.disabledTextColor.b, 0.10)
+                                        border.width: 1
+                                        border.color: Qt.rgba(Kirigami.Theme.disabledTextColor.r, Kirigami.Theme.disabledTextColor.g, Kirigami.Theme.disabledTextColor.b, 0.22)
+                                        PlasmaComponents.Label {
+                                            id: chipText
+                                            anchors.centerIn: parent
+                                            text: modelData
+                                            color: Kirigami.Theme.disabledTextColor
+                                            font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                        }
+                                    }
                                 }
                             }
 
-                            PlasmaComponents.Label {
-                                visible: modelData.statusIndicator && modelData.statusIndicator.length > 0
-                                text: root.statusText(modelData.statusIndicator, modelData.statusDescription)
-                                color: root.statusColor(modelData.statusIndicator)
-                                wrapMode: Text.WordWrap
+                            GridLayout {
                                 Layout.fillWidth: true
-                            }
+                                columns: String(modelData.provider || "").toLowerCase() === "opencode" || String(modelData.provider || "").toLowerCase() === "opencodego" ? 3 : 2
+                                columnSpacing: Kirigami.Units.smallSpacing
+                                rowSpacing: Kirigami.Units.smallSpacing
+                                Repeater {
+                                    model: modelData.rows || []
 
-                            Kirigami.Separator {
-                                Layout.fillWidth: true
-                            }
+                                    delegate: Rectangle {
+                                        Layout.fillWidth: true
+                                        Layout.minimumWidth: Kirigami.Units.gridUnit * 8
+                                        color: Kirigami.Theme.backgroundColor
+                                        border.width: 1
+                                        border.color: Qt.rgba(Kirigami.Theme.textColor.r, Kirigami.Theme.textColor.g, Kirigami.Theme.textColor.b, 0.18)
+                                        radius: Kirigami.Units.cornerRadius
+                                        implicitHeight: panelContent.implicitHeight + Kirigami.Units.smallSpacing * 2
 
-                            Repeater {
-                                model: modelData.rows || []
-
-                                delegate: ColumnLayout {
-                                    Layout.fillWidth: true
-                                    spacing: Kirigami.Units.smallSpacing
+                                        ColumnLayout {
+                                            id: panelContent
+                                            anchors.fill: parent
+                                            anchors.margins: Kirigami.Units.smallSpacing
+                                            spacing: Kirigami.Units.smallSpacing
 
                                     RowLayout {
                                         Layout.fillWidth: true
@@ -1164,6 +1348,23 @@ PlasmoidItem {
                                         wrapMode: Text.WordWrap
                                         Layout.fillWidth: true
                                     }
+                                        }
+                                    }
+                                }
+                            }
+
+                            ColumnLayout {
+                                visible: modelData.additionalRows && modelData.additionalRows.length > 0
+                                Layout.fillWidth: true
+                                spacing: Kirigami.Units.smallSpacing
+                                Kirigami.Heading { text: i18n("Additional limits"); level: 4; Layout.fillWidth: true }
+                                Repeater {
+                                    model: modelData.additionalRows || []
+                                    delegate: RowLayout {
+                                        Layout.fillWidth: true
+                                        PlasmaComponents.Label { text: modelData.title; Layout.fillWidth: true }
+                                        PlasmaComponents.Label { text: root.formatUsedPercent(modelData.percentLeft, modelData.usageKnown); color: root.usageAccent(modelData.percentLeft) }
+                                    }
                                 }
                             }
 
@@ -1185,8 +1386,14 @@ PlasmoidItem {
                                 spacing: Kirigami.Units.smallSpacing
 
                                 Kirigami.Heading {
-                                    text: i18n("Cost")
+                                    text: i18n("Usage insights")
                                     level: 4
+                                    Layout.fillWidth: true
+                                }
+                                PlasmaComponents.Label {
+                                    text: i18n("Additional usage data from CLI")
+                                    color: Kirigami.Theme.disabledTextColor
+                                    font.pointSize: Kirigami.Theme.smallFont.pointSize
                                     Layout.fillWidth: true
                                 }
 
@@ -1215,11 +1422,11 @@ PlasmoidItem {
 
                                 PlasmaComponents.Label {
                                     visible: modelData.costSummary
-                                        && modelData.costSummary.source
-                                        && modelData.costSummary.source.length > 0
                                     text: modelData.costSummary && modelData.costSummary.source === "local"
-                                        ? i18n("Local token-cost estimate")
-                                        : i18n("Source: %1", modelData.costSummary ? modelData.costSummary.source : "")
+                                        ? i18n("Provider-level list-price estimate; not account-attributed")
+                                        : (modelData.costSummary && modelData.costSummary.source
+                                            ? i18n("Provider-level list-price estimate; source: %1", modelData.costSummary.source)
+                                            : i18n("Provider-level list-price estimate; not account-attributed"))
                                     color: Kirigami.Theme.disabledTextColor
                                     font.pointSize: Kirigami.Theme.smallFont.pointSize
                                     elide: Text.ElideRight
@@ -1237,7 +1444,7 @@ PlasmoidItem {
                                     Layout.fillWidth: true
 
                                     Kirigami.Heading {
-                                        text: i18n("Credits")
+                                        text: String(modelData.provider || "").toLowerCase() === "deepseek" ? i18n("Balance") : i18n("Credits")
                                         level: 4
                                         Layout.fillWidth: true
                                     }
@@ -1252,7 +1459,9 @@ PlasmoidItem {
                                 }
 
                                 PlasmaComponents.Label {
-                                    text: root.formatCredits(modelData.creditsRemaining)
+                                    text: String(modelData.provider || "").toLowerCase() === "deepseek"
+                                        ? root.formatCurrency(modelData.creditsRemaining, modelData.creditsCurrencyCode || "USD")
+                                        : root.formatCredits(modelData.creditsRemaining)
                                     font.weight: Font.DemiBold
                                     Layout.alignment: Qt.AlignTop
                                 }
@@ -1260,7 +1469,8 @@ PlasmoidItem {
 
                             ColumnLayout {
                                 Layout.fillWidth: true
-                                visible: modelData.dashboardSummary && modelData.dashboardSummary.length > 0
+                                visible: String(modelData.provider || "").toLowerCase() !== "deepseek"
+                                    && modelData.dashboardSummary && modelData.dashboardSummary.length > 0
                                 spacing: Kirigami.Units.smallSpacing
 
                                 Kirigami.Heading {
@@ -1293,7 +1503,7 @@ PlasmoidItem {
                             }
 
                             Kirigami.Separator {
-                                visible: index < root.entries.length - 1
+                                visible: false
                                 Layout.fillWidth: true
                             }
                         }
@@ -1308,6 +1518,31 @@ PlasmoidItem {
                 font.pointSize: Kirigami.Theme.smallFont.pointSize
                 elide: Text.ElideRight
                 Layout.fillWidth: true
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: Kirigami.Units.smallSpacing
+                QQC2.ToolButton {
+                    icon.name: "configure"
+                    text: i18n("Settings…")
+                    onClicked: Plasmoid.action("configure").trigger()
+                    Layout.alignment: Qt.AlignLeft
+                }
+                Item { Layout.fillWidth: true }
+                PlasmaComponents.Label {
+                    text: root.generatedAt.length > 0 ? i18n("Updated %1", root.generatedAt) : ""
+                    color: Kirigami.Theme.disabledTextColor
+                    font.pointSize: Kirigami.Theme.smallFont.pointSize
+                    elide: Text.ElideLeft
+                }
+                QQC2.ToolButton {
+                    icon.name: "view-refresh"
+                    display: QQC2.AbstractButton.IconOnly
+                    text: i18n("Refresh")
+                    enabled: !root.loading
+                    onClicked: root.refresh()
+                }
             }
         }
     }
@@ -1397,6 +1632,8 @@ PlasmoidItem {
         triggeredOnStart: true
         onTriggered: root.refresh()
     }
+
+    onEntriesChanged: keepSelectionValid()
 
     onRefreshSecondsChanged: {
         refreshTimer.restart()
