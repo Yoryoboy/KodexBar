@@ -8,7 +8,7 @@
 
 KodexBar is a native KDE Plasma widget inspired by [CodexBar](https://github.com/steipete/CodexBar). It keeps Codex, Claude, OpenAI, Gemini, Copilot, OpenRouter, Bedrock, GroqCloud, and other CodexBar-supported provider limits visible from a Plasma panel popup.
 
-The widget intentionally uses the upstream `codexbar` CLI as its data source instead of reimplementing provider backends. CodexBar owns auth, provider config, API calls, local CLI probing, and `~/.codexbar/config.json`; KodexBar focuses on the Plasma panel and popup UI.
+The widget intentionally uses the upstream `codexbar` CLI as its data source instead of reimplementing provider backends. CodexBar owns auth, provider config, API calls, local CLI probing, and `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`; KodexBar focuses on the Plasma panel and popup UI.
 
 ![KodexBar widget screenshot](screenshot.png)
 
@@ -23,10 +23,11 @@ The widget intentionally uses the upstream `codexbar` CLI as its data source ins
 ## Requirements
 
 - KDE Plasma 6
+- Bash and `jq`
 - `kpackagetool6`
-- Upstream `codexbar` CLI on `PATH`, or a full path configured in the widget settings
+- Upstream `codexbar` CLI on `PATH`, or a full executable path configured in the widget settings or `KODEXBAR_CODEXBAR_COMMAND`
 
-Install the upstream CLI with Homebrew on Linux:
+The installer does not download dependencies. Install the upstream CLI with Homebrew on Linux:
 
 ```sh
 brew install steipete/tap/codexbar
@@ -40,22 +41,39 @@ Make sure the provider CLIs or credentials you rely on are already configured. F
 
 ## Install
 
-Clone this repository and install the applet:
+Clone this repository and run the repository-owned installer:
 
 ```sh
-git clone https://github.com/tylxr59/KodexBar.git
+git clone https://github.com/Yoryoboy/KodexBar.git
 cd KodexBar
-kpackagetool6 -t Plasma/Applet -i .
+./install.sh
 ```
 
-Then add **KodexBar** to a Plasma panel.
+The installer validates Bash, `jq`, `kpackagetool6`, and the upstream CLI, then installs the executable `kodexbar-multi` to `${XDG_BIN_HOME:-$HOME/.local/bin}` and installs or upgrades the Plasma applet. Add **KodexBar** to a Plasma panel. Existing widget configuration, including a stored custom command, is preserved; only new installations default the command to `kodexbar-multi`.
 
-For development reloads:
+For development or manual package operations:
 
 ```sh
+kpackagetool6 -t Plasma/Applet -i .
+# Update an existing local package:
 kpackagetool6 -t Plasma/Applet -u .
-plasmashell --replace
 ```
+
+The installer does not edit `plasma-org.kde.plasma.desktop-appletsrc` or restart Plasma automatically.
+
+## Bundled multi-provider wrapper
+
+The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command. A no-provider `usage` query asks Codex for `--all-accounts`, OpenCode Go for `--source auto`, and DeepSeek for `--source api`, returning all successful JSON entries. Successful provider data is retained when another provider fails; failed provider output is omitted. The command fails only if all providers fail or the resulting JSON is invalid.
+
+For the current DeepSeek payload shape, the wrapper defensively converts `usage.primary.resetDescription` such as `$2.05 (Paid: $2.05 / Granted: $0.00)` into structured `credits.remaining`, `paidBalance`, `grantedBalance`, and `currencyCode` fields. Unrecognized descriptions are left unchanged. Explicit Codex usage receives `--all-accounts` only when no account selector is present. Non-`usage` commands, including `cost`, pass through unchanged: usage is provider quota/balance data, while cost is a separate local/provider estimate scan.
+
+To override upstream CLI discovery at runtime:
+
+```sh
+export KODEXBAR_CODEXBAR_COMMAND=/opt/codexbar/bin/codexbar
+```
+
+This variable must be present in Plasma's runtime environment; setting it only while running `install.sh` does not persist it. Without the override, the wrapper uses `codexbar` from `PATH`, then `${XDG_BIN_HOME:-$HOME/.local/bin}/codexbar`.
 
 ## Usage
 
@@ -63,7 +81,7 @@ plasmashell --replace
 - Use the refresh button in the popup to query the CLI immediately.
 - Open widget settings to change provider, source, refresh cadence, and compact label fields.
 - Leave Provider as `Best available` if you want KodexBar to find the first usable Linux-capable provider/source combination.
-- Choose `All enabled` to ask the CLI for all providers enabled in `~/.codexbar/config.json`.
+- Choose `All enabled` to ask the CLI for all providers enabled in `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`.
 
 The popup renders common CodexBar CLI fields:
 
@@ -83,7 +101,7 @@ KodexBar exposes these Plasma widget settings:
 
 | Setting | Purpose |
 | --- | --- |
-| Command | `codexbar` binary name or full path. |
+| Command | `codexbar` binary name or full path. New installs use `kodexbar-multi`; existing stored commands are unchanged. |
 | Provider | `Best available`, `All enabled`, or a specific CodexBar provider ID. |
 | Source | `Best available`, `auto`, `web`, `cli`, `oauth`, or `api`. |
 | Refresh | Poll interval, from 10 to 3600 seconds. |
@@ -93,7 +111,7 @@ KodexBar exposes these Plasma widget settings:
 | Show email in widget | Show the account email inside the popup when available. |
 | Fetch provider status | Add `--status` to CLI calls and display incident/maintenance state. |
 
-Provider credentials and provider toggles are still controlled by the CodexBar CLI config at `~/.codexbar/config.json`.
+Provider credentials and provider toggles are still controlled by the CodexBar CLI config at `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json` (XDG config semantics apply).
 
 ## Linux provider fallback
 
@@ -119,10 +137,27 @@ If the widget shows a CLI error, either install the CLI, configure provider cred
 ## How It Works
 
 1. Plasma runs the applet from `metadata.json` and `contents/ui/main.qml`.
-2. The applet shells out to `codexbar usage --format json --json-only`.
+2. New installs configure the applet to call `kodexbar-multi`; the wrapper shells out to upstream `codexbar` for aggregate usage.
 3. The JSON payload is normalized into provider cards, usage rows, credit rows, status text, and compact panel text.
-4. A timer refreshes the data at the configured interval.
-5. Provider icons are loaded from `contents/icons/providers/`.
+4. A separate `codexbar cost` query supplies optional local cost summaries.
+5. A timer refreshes the data at the configured interval.
+6. Provider icons are loaded from `contents/icons/providers/`.
+
+## Update, uninstall, and rollback
+
+Run the installer again from the repository to update both the applet and wrapper:
+
+```sh
+./install.sh
+```
+
+When an existing wrapper differs, it is backed up beside the target with a timestamped `.backup.*` suffix before replacement; the backup path is printed. To remove KodexBar and its recognizable bundled wrapper only:
+
+```sh
+./install.sh --uninstall
+```
+
+Uninstall preserves an unrecognized user-owned `kodexbar-multi`, all CodexBar credentials, custom commands, and Plasma applet configuration. To roll back the wrapper, replace the installed wrapper with a printed backup (or reinstall the desired repository version); Plasma itself is not restarted.
 
 ## Troubleshooting
 
@@ -135,6 +170,9 @@ If the widget shows a CLI error, either install the CLI, configure provider cred
 | Provider works in terminal but not in the widget | Use an absolute command path in settings if Plasma does not inherit your shell `PATH`. |
 | `Best available` picks the wrong provider | Select the provider explicitly in settings. |
 | Status never appears | Enable **Fetch provider status** in widget settings. |
+| `kodexbar-multi` cannot find upstream CodexBar | Confirm `codexbar` is executable, or export `KODEXBAR_CODEXBAR_COMMAND` in the environment that launches Plasma. |
+| Only some aggregate providers appear | Check the unavailable provider's credentials/source; successful providers are intentionally preserved. |
+| Installer refuses a dependency | Install Bash, `jq`, `kpackagetool6`, or upstream `codexbar`; the installer never downloads dependencies. |
 
 ## License
 

@@ -6,7 +6,7 @@
   <kcfgfile name=""/>
   <group name="General">
     <entry name="codexbarCommand" type="String">
-      <default>codexbar</default>
+      <default>kodexbar-multi</default>
     </entry>
     <entry name="provider" type="String">
       <default>detect</default>

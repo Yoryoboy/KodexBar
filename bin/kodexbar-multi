@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+# KODEXBAR_MULTI_BUNDLED_WRAPPER v1
+set -u
+
+self_path=$(readlink -f "$0" 2>/dev/null || printf '%s' "$0")
+
+resolve_command() {
+    local configured candidate resolved
+    configured=${KODEXBAR_CODEXBAR_COMMAND-}
+    if [[ -n $configured ]]; then
+        if [[ $configured == */* ]]; then
+            candidate=$configured
+        else
+            candidate=$(command -v -- "$configured" 2>/dev/null || true)
+        fi
+    else
+        candidate=$(command -v codexbar 2>/dev/null || true)
+        [[ -n $candidate ]] || candidate=${XDG_BIN_HOME:-$HOME/.local/bin}/codexbar
+    fi
+
+    if [[ -z ${candidate:-} || ! -x $candidate ]]; then
+        printf 'kodexbar-multi: upstream codexbar CLI not found; install codexbar or set KODEXBAR_CODEXBAR_COMMAND to its executable path\n' >&2
+        return 1
+    fi
+    resolved=$(readlink -f "$candidate" 2>/dev/null || printf '%s' "$candidate")
+    if [[ $resolved == "$self_path" || $candidate -ef "$0" ]]; then
+        printf 'kodexbar-multi: KODEXBAR_CODEXBAR_COMMAND resolves to kodexbar-multi itself; set it to the upstream codexbar executable\n' >&2
+        return 1
+    fi
+    printf '%s\n' "$candidate"
+}
+
+upstream=$(resolve_command) || exit 127
+
+if [[ ${1-} != usage ]]; then
+    exec "$upstream" "$@"
+fi
+
+has_provider=0
+provider_codex=0
+account_selector=0
+previous_provider_flag=0
+for arg in "$@"; do
+    if (( previous_provider_flag )); then
+        [[ $arg == codex ]] && provider_codex=1
+        previous_provider_flag=0
+        continue
+    fi
+    case $arg in
+        --provider)
+            has_provider=1
+            previous_provider_flag=1
+            ;;
+        --provider=*)
+            has_provider=1
+            [[ ${arg#--provider=} == codex ]] && provider_codex=1
+            ;;
+        --account|--account=*|--account-id|--account-id=*|--email|--email=*|--profile|--profile=*|--all-accounts)
+            account_selector=1
+            ;;
+    esac
+done
+
+if (( has_provider == 0 && account_selector == 1 )); then
+    printf 'kodexbar-multi: account selection requires --provider codex; refusing to apply it to unrelated providers\n' >&2
+    exit 2
+fi
+
+if (( has_provider == 0 )); then
+    tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/kodexbar-multi.XXXXXX") || {
+        printf 'kodexbar-multi: unable to create temporary directory\n' >&2
+        exit 1
+    }
+    trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
+    successes=0
+    outputs=()
+    original_args=("$@")
+
+    run_provider() {
+        local name=$1 output=$tmpdir/$1.json
+        shift
+        if "$upstream" "${original_args[@]}" --format json --json-only "$@" >"$output" 2>"$tmpdir/$name.stderr" \
+            && jq -e . "$output" >/dev/null 2>&1; then
+            if [[ $name == deepseek ]]; then
+                jq 'def money: gsub("[, $]"; "") | tonumber;
+                    def normalized:
+                      try (.usage.primary.resetDescription
+                        | capture("\\$(?<remaining>[0-9]+(?:\\.[0-9]+)?) \\((?:Paid): \\$(?<paid>[0-9]+(?:\\.[0-9]+)?) \\/ (?:Granted): \\$(?<granted>[0-9]+(?:\\.[0-9]+)?)\\)")
+                        | {remaining: (.remaining|money), paidBalance: (.paid|money), grantedBalance: (.granted|money), currencyCode: "USD"})
+                      catch null;
+                    def normalize_entry:
+                      if ((.provider // "" | ascii_downcase) == "deepseek" and normalized != null) then .credits = normalized else . end;
+                    if (type == "array") then map(normalize_entry)
+                    elif (type == "object") then normalize_entry
+                    else . end' "$output" >"$tmpdir/$name.normalized" \
+                    && mv "$tmpdir/$name.normalized" "$output" || return 1
+            fi
+            outputs+=("$output")
+            successes=$((successes + 1))
+        fi
+    }
+
+    run_provider codex --provider codex --all-accounts
+    run_provider opencode --provider opencodego --source auto
+    run_provider deepseek --provider deepseek --source api
+
+    if (( successes == 0 )); then
+        printf 'kodexbar-multi: all provider usage queries failed; check codexbar credentials and KODEXBAR_CODEXBAR_COMMAND\n' >&2
+        exit 1
+    fi
+    jq -s '[.[] | if type == "array" then .[] else . end]' "${outputs[@]}" || {
+        printf 'kodexbar-multi: provider output could not be aggregated as valid JSON\n' >&2
+        exit 1
+    }
+    exit 0
+fi
+
+if (( provider_codex == 1 && account_selector == 0 )); then
+    exec "$upstream" "$@" --all-accounts
+fi
+exec "$upstream" "$@"
