@@ -1304,8 +1304,13 @@ PlasmoidItem {
                             }
 
                             GridLayout {
+                                id: usagePanels
+                                readonly property bool isOpenCode: {
+                                    var provider = String(modelData.provider || "").toLowerCase()
+                                    return provider === "opencode" || provider === "opencodego"
+                                }
                                 Layout.fillWidth: true
-                                columns: String(modelData.provider || "").toLowerCase() === "opencode" || String(modelData.provider || "").toLowerCase() === "opencodego" ? 3 : 2
+                                columns: usagePanels.isOpenCode ? 3 : 2
                                 columnSpacing: Kirigami.Units.smallSpacing
                                 rowSpacing: Kirigami.Units.smallSpacing
                                 Repeater {
@@ -1326,30 +1331,52 @@ PlasmoidItem {
                                             anchors.margins: Kirigami.Units.smallSpacing
                                             spacing: Kirigami.Units.smallSpacing
 
-                                    RowLayout {
-                                        Layout.fillWidth: true
-                                        spacing: Kirigami.Units.smallSpacing
+                                            RowLayout {
+                                                visible: !usagePanels.isOpenCode
+                                                Layout.fillWidth: true
+                                                spacing: Kirigami.Units.smallSpacing
 
-                                        Kirigami.Heading {
-                                            text: modelData.title
-                                            level: 4
-                                            elide: Text.ElideRight
-                                            Layout.fillWidth: true
-                                        }
+                                                Kirigami.Heading {
+                                                    text: modelData.title
+                                                    level: 4
+                                                    elide: Text.ElideRight
+                                                    Layout.fillWidth: true
+                                                }
 
-                                        PlasmaComponents.Label {
-                                            text: root.formatResetTime(modelData.resetsAt)
-                                            color: Kirigami.Theme.disabledTextColor
-                                            visible: text.length > 0
-                                            elide: Text.ElideRight
-                                            Layout.maximumWidth: Kirigami.Units.gridUnit * 9
-                                        }
+                                                PlasmaComponents.Label {
+                                                    text: root.formatResetTime(modelData.resetsAt)
+                                                    color: Kirigami.Theme.disabledTextColor
+                                                    visible: text.length > 0
+                                                    elide: Text.ElideRight
+                                                    Layout.maximumWidth: Kirigami.Units.gridUnit * 9
+                                                }
 
-                                        PlasmaComponents.Label {
-                                            text: root.formatUsedPercent(modelData.percentLeft, modelData.usageKnown)
-                                            color: root.usageAccent(modelData.percentLeft)
-                                        }
-                                    }
+                                                PlasmaComponents.Label {
+                                                    text: root.formatUsedPercent(modelData.percentLeft, modelData.usageKnown)
+                                                    color: root.usageAccent(modelData.percentLeft)
+                                                }
+                                            }
+
+                                            ColumnLayout {
+                                                visible: usagePanels.isOpenCode
+                                                Layout.fillWidth: true
+                                                spacing: Kirigami.Units.smallSpacing / 2
+
+                                                Kirigami.Heading {
+                                                    text: modelData.title
+                                                    level: 4
+                                                    wrapMode: Text.WordWrap
+                                                    Layout.fillWidth: true
+                                                }
+
+                                                PlasmaComponents.Label {
+                                                    text: root.formatUsedPercent(modelData.percentLeft, modelData.usageKnown)
+                                                    color: root.usageAccent(modelData.percentLeft)
+                                                    font.weight: Font.DemiBold
+                                                    Layout.fillWidth: true
+                                                }
+
+                                            }
 
                                     Rectangle {
                                         readonly property real used: root.usedPercent(modelData.percentLeft) || 0
@@ -1368,6 +1395,16 @@ PlasmoidItem {
                                             radius: parent.radius
                                             color: root.usageAccent(modelData.percentLeft)
                                         }
+                                    }
+
+                                    PlasmaComponents.Label {
+                                        text: root.formatResetTime(modelData.resetsAt)
+                                        color: Kirigami.Theme.disabledTextColor
+                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                        visible: usagePanels.isOpenCode && text.length > 0
+                                        elide: Text.ElideRight
+                                        wrapMode: Text.WordWrap
+                                        Layout.fillWidth: true
                                     }
 
                                     PlasmaComponents.Label {
