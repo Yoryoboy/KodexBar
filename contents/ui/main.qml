@@ -74,30 +74,42 @@ PlasmoidItem {
         selectedEntryKey = entryKey(entries[0])
     }
 
+    function formatDuration(seconds) {
+        if (typeof seconds !== "number" || !isFinite(seconds) || seconds < 0) {
+            return ""
+        }
+        var minutes = Math.round(seconds / 60)
+        if (minutes < 60) {
+            return i18n("%1 min", minutes)
+        }
+        var hours = Math.floor(minutes / 60)
+        var remainder = minutes % 60
+        return remainder === 0 ? i18n("%1 h", hours) : i18n("%1 h %2 min", hours, remainder)
+    }
+
     function paceText(entry) {
         var pace = entry && entry.pace
         if (!pace || typeof pace !== "object") {
             return ""
         }
+        var selected = pace.primary && typeof pace.primary === "object" ? pace.primary
+            : (pace.secondary && typeof pace.secondary === "object" ? pace.secondary : pace)
         var parts = []
-        if (pace.willLastToReset === true) {
+        if (selected.willLastToReset === true) {
             parts.push(i18n("On track"))
-        } else if (pace.willLastToReset === false) {
+        } else if (selected.willLastToReset === false) {
             parts.push(i18n("May exhaust before reset"))
-        } else if (typeof pace.headroomRatio === "number" && isFinite(pace.headroomRatio)) {
-            parts.push(pace.headroomRatio >= 1 ? i18n("On track") : i18n("May exhaust before reset"))
         }
-        if (typeof pace.headroomRatio === "number" && isFinite(pace.headroomRatio)) {
-            parts.push(i18n("%1× headroom", Number(pace.headroomRatio).toLocaleString(Qt.locale(), "f", 1)))
+        if (typeof selected.expectedUsedPercent === "number" && isFinite(selected.expectedUsedPercent)) {
+            parts.push(i18n("Expected usage %1%", Math.round(selected.expectedUsedPercent)))
         }
-        if (typeof pace.expectedUsage === "number" && isFinite(pace.expectedUsage)) {
-            parts.push(i18n("Expected usage %1%", Math.round(Math.max(0, pace.expectedUsage) * 100)))
+        if (typeof selected.deltaPercent === "number" && isFinite(selected.deltaPercent)) {
+            var delta = Math.round(Math.abs(selected.deltaPercent))
+            parts.push(selected.deltaPercent <= 0 ? i18n("Reserve %1%", delta) : i18n("Deficit %1%", delta))
         }
-        if (typeof pace.reserve === "number" && isFinite(pace.reserve)) {
-            parts.push(i18n("Reserve %1%", Math.round(Math.max(0, pace.reserve) * 100)))
-        }
-        if (typeof pace.exhaustionEstimate === "string" && pace.exhaustionEstimate.length > 0) {
-            parts.push(i18n("Estimated exhaustion %1", pace.exhaustionEstimate))
+        var duration = formatDuration(selected.etaSeconds)
+        if (duration.length > 0) {
+            parts.push(i18n("ETA %1", duration))
         }
         return parts.join(" · ")
     }
@@ -404,6 +416,10 @@ PlasmoidItem {
 
         if (provider === "detect" && source === "detect") {
             result.push({ provider: "", source: "" })
+            var commandName = String(codexbarCommand).split(/[\\/]/).pop()
+            if (commandName === "codexbar-multi") {
+                return result
+            }
         }
 
         if (provider !== "detect" && provider !== "all") {
@@ -961,11 +977,11 @@ PlasmoidItem {
             creditsRemaining: credits ? credits.remaining : (typeof dashboard.creditsRemaining === "number" ? dashboard.creditsRemaining : null),
             codeReviewRemainingPercent: typeof dashboard.codeReviewRemainingPercent === "number" ? dashboard.codeReviewRemainingPercent : null,
             dashboardSummary: dashboardSummary(dashboard),
-            pace: usage.pace && typeof usage.pace === "object" ? usage.pace
+            pace: entry.pace && typeof entry.pace === "object" ? entry.pace
+                : (usage.pace && typeof usage.pace === "object" ? usage.pace
                 : (usage.paceData && typeof usage.paceData === "object" ? usage.paceData
                 : (primary && primary.pace && typeof primary.pace === "object" ? primary.pace
-                : (secondary && secondary.pace && typeof secondary.pace === "object" ? secondary.pace
-                : (entry.pace && typeof entry.pace === "object" ? entry.pace : null)))),
+                : (secondary && secondary.pace && typeof secondary.pace === "object" ? secondary.pace : null)))),
 
             resetCredits: usage.codexResetCredits && typeof usage.codexResetCredits === "object" ? usage.codexResetCredits : null,
             confidence: usage.dataConfidence || entry.dataConfidence || usage.confidence || entry.confidence || (entry.meta && entry.meta.confidence) || "",
@@ -1083,11 +1099,13 @@ PlasmoidItem {
         readonly property int accountCardHeight: Kirigami.Units.iconSizes.small
             + Kirigami.Theme.defaultFont.pixelSize * (2 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
             + Kirigami.Units.smallSpacing * (3 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
+        readonly property int naturalPopupHeight: Math.min(content.implicitHeight + popupMargin * 2, maxPopupHeight)
 
         Layout.minimumWidth: Kirigami.Units.gridUnit * 30
-        Layout.minimumHeight: 0
+        Layout.minimumHeight: naturalPopupHeight
         Layout.preferredWidth: Kirigami.Units.gridUnit * 34
-        Layout.preferredHeight: Math.min(content.implicitHeight + popupMargin * 2, maxPopupHeight)
+        Layout.preferredHeight: naturalPopupHeight
+        Layout.maximumHeight: naturalPopupHeight
 
         ColumnLayout {
             id: content
@@ -1392,7 +1410,8 @@ PlasmoidItem {
                             ColumnLayout {
                                 Layout.fillWidth: true
                                 visible: root.showCostSummary
-                                    && modelData.costSummary
+                                    && modelData.costSummary !== null
+                                    && modelData.costSummary !== undefined
                                     && root.costSummaryRows(modelData.costSummary).length > 0
                                 spacing: Kirigami.Units.smallSpacing
 
@@ -1432,7 +1451,7 @@ PlasmoidItem {
                                 }
 
                                 PlasmaComponents.Label {
-                                    visible: modelData.costSummary
+                                    visible: modelData.costSummary !== null && modelData.costSummary !== undefined
                                     text: modelData.costSummary && modelData.costSummary.source === "local"
                                         ? i18n("Provider-level list-price estimate; not account-attributed")
                                         : (modelData.costSummary && modelData.costSummary.source
@@ -1447,8 +1466,9 @@ PlasmoidItem {
 
                             RowLayout {
                                 Layout.fillWidth: true
-                                visible: modelData.creditsRemaining !== null
-                                    && modelData.creditsRemaining !== undefined
+                                visible: String(modelData.provider || "").toLowerCase() === "deepseek"
+                                    ? modelData.creditsRemaining !== null && modelData.creditsRemaining !== undefined
+                                    : typeof modelData.creditsRemaining === "number" && modelData.creditsRemaining > 0
 
                                 ColumnLayout {
                                     spacing: Kirigami.Units.smallSpacing
