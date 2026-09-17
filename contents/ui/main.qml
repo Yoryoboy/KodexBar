@@ -1073,8 +1073,19 @@ PlasmoidItem {
         readonly property int popupMargin: Kirigami.Units.largeSpacing * 2
         readonly property int maxPopupHeight: Kirigami.Units.gridUnit * 44
 
+        readonly property int maxCardRows: {
+            var rows = 0
+            for (var i = 0; i < root.entries.length; i++) {
+                rows = Math.max(rows, root.cardRows(root.entries[i]).length)
+            }
+            return rows
+        }
+        readonly property int accountCardHeight: Kirigami.Units.iconSizes.small
+            + Kirigami.Theme.defaultFont.pixelSize * (2 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
+            + Kirigami.Units.smallSpacing * (3 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
+
         Layout.minimumWidth: Kirigami.Units.gridUnit * 30
-        Layout.minimumHeight: Math.min(Layout.preferredHeight, maxPopupHeight)
+        Layout.minimumHeight: 0
         Layout.preferredWidth: Kirigami.Units.gridUnit * 34
         Layout.preferredHeight: Math.min(content.implicitHeight + popupMargin * 2, maxPopupHeight)
 
@@ -1090,14 +1101,14 @@ PlasmoidItem {
 
                 QQC2.ScrollView {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: Kirigami.Units.gridUnit * 4.2
+                    Layout.preferredHeight: full.accountCardHeight
                     QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded
                     QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff
 
                     Row {
                         id: accountCards
                         spacing: Kirigami.Units.smallSpacing
-                        height: parent.height
+                        height: full.accountCardHeight
 
                         Repeater {
                             model: root.entries
@@ -1105,7 +1116,7 @@ PlasmoidItem {
                                 readonly property bool selected: root.entryKey(modelData) === root.selectedEntryKey
                                 readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
                                 width: Kirigami.Units.gridUnit * 6.2
-                                height: Kirigami.Units.gridUnit * 3.55
+                                height: full.accountCardHeight
                                 radius: Kirigami.Units.cornerRadius
                                 color: selected ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.16) : Kirigami.Theme.backgroundColor
                                 border.width: selected ? 1 : 0
@@ -1188,8 +1199,8 @@ PlasmoidItem {
                 visible: root.entries.length > 0
                 clip: true
                 Layout.fillWidth: true
+                Layout.minimumHeight: 0
                 Layout.preferredHeight: Math.min(contentList.implicitHeight, Kirigami.Units.gridUnit * 32)
-                Layout.fillHeight: contentList.implicitHeight > Kirigami.Units.gridUnit * 32
 
                 QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
                 QQC2.ScrollBar.vertical.policy: contentList.implicitHeight > scrollView.height
@@ -1523,12 +1534,6 @@ PlasmoidItem {
             RowLayout {
                 Layout.fillWidth: true
                 spacing: Kirigami.Units.smallSpacing
-                QQC2.ToolButton {
-                    icon.name: "configure"
-                    text: i18n("Settings…")
-                    onClicked: Plasmoid.action("configure").trigger()
-                    Layout.alignment: Qt.AlignLeft
-                }
                 Item { Layout.fillWidth: true }
                 PlasmaComponents.Label {
                     text: root.generatedAt.length > 0 ? i18n("Updated %1", root.generatedAt) : ""
