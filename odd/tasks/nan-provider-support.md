@@ -39,3 +39,8 @@ Add nan.builders (NaN) as a provider in the `kodexbar-multi` aggregate wrapper a
 - `8b53247` feat: render NaN token usage in popup (QML + nan.svg icon)
 - `b542b15` docs: document NaN provider support (README)
 - `c083c2b` docs: record NaN provider support tasks (feature doc)
+- `4362c29` fix: retry transient nan metrics failure once (retry + metrics-flaky test)
+
+## Post-deploy findings
+- The `nan` CLI fails intermittently in multi-minute streaks (server-side/network); direct invocations work before and after. During a streak the aggregate omits the NaN entry (silent by design); the retry added in `4362c29` absorbs short transient failures. KodexBar code is not implicated: wrapper, QML, and environment were verified (env -i with the systemd user PATH reproduces plasmashell's environment).
+- Third native review (lineage `review-aad2ed68eee1cb36`, target `sha256:cfa0587c…`): approved and acknowledged; 9 advisory findings, all informational. Reviewer lenses intermittently produce schema-invalid output (unknown field "evidence", non-JSON bodies) — recovered by re-running the slot; rejected payloads preserved under `.git/gentle-ai/rejected-results/`.
