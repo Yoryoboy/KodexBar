@@ -1,1 +1,4 @@
-{"provider":"codex","usage":{"primary":{"remainingPercent":72},"secondary":{"remainingPercent":55}}}
+[
+  {"provider":"codex","account":"account-a","usage":{"primary":{"remainingPercent":72},"secondary":{"remainingPercent":55}}},
+  {"provider":"codex","account":"account-b","usage":{"primary":{"remainingPercent":61},"secondary":{"remainingPercent":44}}}
+]

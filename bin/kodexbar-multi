@@ -32,6 +32,121 @@ resolve_command() {
 
 upstream=$(resolve_command) || exit 127
 
+local_activity_epoch() {
+    local home=$1 latest
+    [[ -d $home/sessions ]] || return 0
+    latest=$(find "$home/sessions" -type f -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1)
+    [[ -n $latest ]] || return 0
+    awk -v value="$latest" 'BEGIN { printf "%.0f\n", value }'
+}
+
+local_activity_timestamp() {
+    local timestamp
+    timestamp=$(local_activity_epoch "$1")
+    [[ -n $timestamp ]] || return 0
+    local_activity_iso "$timestamp"
+}
+
+local_activity_iso() {
+    local timestamp=$1
+    [[ $timestamp =~ ^[0-9]+$ ]] || return 0
+    date -u -d "@$timestamp" '+%Y-%m-%dT%H:%M:%SZ' 2>/dev/null || true
+}
+
+codex_config_homes() {
+    local config_file=${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json
+    [[ -r $config_file ]] || return 0
+    jq -r '
+        .providers? | if type == "array" or type == "object" then .[] else empty end
+        | if type == "object" then .codexProfileHomePaths? else empty end
+        | if type == "array" then .[] else . end
+        | select(type == "string" and length > 0)' "$config_file" 2>/dev/null || true
+}
+
+codex_candidate_homes() {
+    {
+        codex_config_homes
+        printf '%s\n' "${CODEX_HOME:-$HOME/.codex}"
+    } | awk 'NF && !seen[$0]++'
+}
+
+codex_identity_for_home() {
+    local home=$1 payload identities identity_count
+    payload=$(CODEX_HOME="$home" "$upstream" usage --provider codex --all-accounts --format json --json-only 2>/dev/null) || return 1
+    identities=$(jq -r '
+        [if type == "array" then .[] else . end
+         | (.account // .usage.accountEmail // .usage.identity.accountEmail // empty)
+         | select(type == "string" and length > 0)]
+        | unique | .[]' <<<"$payload" 2>/dev/null) || return 1
+    identity_count=$(grep -c . <<<"$identities" || true)
+    [[ $identity_count == 1 ]] || return 1
+    printf '%s\n' "$identities"
+}
+
+codex_activity_map() {
+    local spec account home timestamp iso newest_epoch=-1 newest_home="" tied=0 identity
+    # Explicit account=home mappings remain authoritative and avoid another CLI query.
+    if [[ -n ${KODEXBAR_CODEX_ACCOUNT_HOMES-} ]]; then
+        while IFS= read -r spec; do
+            [[ $spec == *=* ]] || continue
+            account=${spec%%=*}
+            home=${spec#*=}
+            iso=$(local_activity_timestamp "$home")
+            [[ -n $iso ]] && jq -cn --arg key "$account" --arg value "$iso" '[{key: $key, value: $value}] | from_entries'
+        done < <(printf '%s' "$KODEXBAR_CODEX_ACCOUNT_HOMES" | tr ';' '\n') | jq -s 'add // {}'
+        return 0
+    fi
+    if [[ -n ${KODEXBAR_CODEX_HOME-} ]]; then
+        home=$KODEXBAR_CODEX_HOME
+        iso=$(local_activity_timestamp "$home")
+        [[ -n $iso ]] && jq -cn --arg value "$iso" '{"*": $value}'
+        return 0
+    fi
+    while IFS= read -r home; do
+        timestamp=$(local_activity_epoch "$home")
+        [[ $timestamp =~ ^[0-9]+$ ]] || continue
+        if (( timestamp > newest_epoch )); then
+            newest_epoch=$timestamp
+            newest_home=$home
+            tied=0
+        elif (( timestamp == newest_epoch )); then
+            tied=1
+        fi
+    done < <(codex_candidate_homes)
+    (( newest_epoch >= 0 && tied == 0 )) || { printf '{}\n'; return 0; }
+    identity=$(codex_identity_for_home "$newest_home") || { printf '{}\n'; return 0; }
+    iso=$(local_activity_iso "$newest_epoch")
+    jq -cn --arg key "$identity" --arg value "$iso" '[{key: $key, value: $value}] | from_entries'
+}
+
+opencode_activity_iso() {
+    local db=${KODEXBAR_OPENCODE_DB-${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db}
+    local timestamp seconds
+    [[ -r $db ]] || return 0
+    timestamp=$(sqlite3 -readonly "$db" 'SELECT max(time_updated) FROM session WHERE time_updated IS NOT NULL;' 2>/dev/null || true)
+    [[ $timestamp =~ ^[0-9]+$ ]] || return 0
+    seconds=$timestamp
+    (( timestamp > 10000000000 )) && seconds=$((timestamp / 1000))
+    local_activity_iso "$seconds"
+}
+
+enrich_activity() {
+    local name=$1 file=$2 activity
+    if [[ $name == codex ]]; then
+        activity=$(codex_activity_map)
+        jq --argjson activity "$activity" '
+            def account_key: (.account // .usage.accountEmail // .usage.identity.accountEmail // "");
+            if type == "array" then
+                map(if ($activity[account_key] // (if length == 1 then $activity["*"] else null end)) then .activity = {lastActivityAt: ($activity[account_key] // $activity["*"]), source: "local"} else . end)
+            elif ($activity[account_key] // $activity["*"]) then .activity = {lastActivityAt: ($activity[account_key] // $activity["*"]), source: "local"}
+            else . end' "$file" >"$file.enriched" && mv "$file.enriched" "$file" || return 1
+    elif [[ $name == opencode ]]; then
+        activity=$(opencode_activity_iso)
+        [[ -n $activity ]] || return 0
+        jq --arg value "$activity" 'if type == "array" and length == 1 then map(.activity = {lastActivityAt: $value, source: "local"}) elif type == "object" then .activity = {lastActivityAt: $value, source: "local"} else . end' "$file" >"$file.enriched" && mv "$file.enriched" "$file" || return 1
+    fi
+}
+
 if [[ ${1-} != usage ]]; then
     exec "$upstream" "$@"
 fi
@@ -95,6 +210,7 @@ if (( has_provider == 0 )); then
                     else . end' "$output" >"$tmpdir/$name.normalized" \
                     && mv "$tmpdir/$name.normalized" "$output" || return 1
             fi
+            enrich_activity "$name" "$output" || true
             outputs+=("$output")
             successes=$((successes + 1))
         fi

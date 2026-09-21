@@ -14,8 +14,20 @@ cat >"$fake" <<'FAKE'
 printf '%s\n' "$*" >>"$FAKE_LOG"
 if [[ ${FAKE_MODE:-normal} == fail-all ]]; then exit 1; fi
 if [[ ${FAKE_MODE:-normal} == partial && $* == *"--provider opencodego"* ]]; then exit 1; fi
-if [[ $* == *"--provider codex"* ]]; then cat "$FAKE_FIXTURES/codex.json"
-elif [[ $* == *"--provider opencodego"* ]]; then cat "$FAKE_FIXTURES/opencodego.json"
+if [[ $* == *"--provider codex"* ]]; then
+    if [[ ${FAKE_MODE:-normal} == auto-codex && -n ${CODEX_HOME-} ]]; then
+        if [[ ${FAKE_MODE_AUTO_RESULT:-match} == ambiguous ]]; then
+            printf '[{"provider":"codex","account":"account-a"},{"provider":"codex","account":"account-b"}]\n'
+        elif [[ ${FAKE_MODE_AUTO_RESULT:-match} == fail ]]; then
+            exit 1
+        else
+            printf '{"provider":"codex","account":"account-b"}\n'
+        fi
+    else
+        cat "$FAKE_FIXTURES/codex.json"
+    fi
+elif [[ $* == *"--provider opencodego"* ]]; then
+    if [[ ${FAKE_MODE:-normal} == multiple-opencode ]]; then cat "$FAKE_FIXTURES/opencodego-multiple.json"; else cat "$FAKE_FIXTURES/opencodego.json"; fi
 elif [[ $* == *"--provider deepseek"* ]]; then
     if [[ ${FAKE_MODE:-normal} == unmatched ]]; then cat "$FAKE_FIXTURES/deepseek-unmatched.json"; else cat "$FAKE_FIXTURES/deepseek.json"; fi
 elif [[ $1 == cost ]]; then printf '{"provider":"codex","totals":{"totalCost":1}}\n'
@@ -24,13 +36,30 @@ FAKE
 chmod 755 "$fake"
 export FAKE_LOG=$log FAKE_FIXTURES=$fixtures KODEXBAR_CODEXBAR_COMMAND=$fake
 
+codex_home_a=$tmpdir/codex-home-a
+codex_home_b=$tmpdir/codex-home-b
+mkdir -p "$codex_home_a/sessions" "$codex_home_b/sessions"
+printf '{}' >"$codex_home_a/sessions/recent.jsonl"
+printf '{}' >"$codex_home_b/sessions/recent.jsonl"
+touch -d '2025-01-02 03:04:05 UTC' "$codex_home_a/sessions/recent.jsonl"
+touch -d '2025-01-03 03:04:05 UTC' "$codex_home_b/sessions/recent.jsonl"
+export KODEXBAR_CODEX_ACCOUNT_HOMES="account-a=$codex_home_a;account-b=$codex_home_b"
+export XDG_DATA_HOME=$tmpdir/xdg-data
+mkdir -p "$XDG_DATA_HOME/opencode"
+sqlite3 "$XDG_DATA_HOME/opencode/opencode.db" 'CREATE TABLE session (time_updated INTEGER); INSERT INTO session VALUES (1735959845000);'
+
 fail() { printf 'FAIL: %s\n' "$1" >&2; exit 1; }
 assert() { "$@" || fail "$*"; }
 assert_json() { jq -e "$1" >/dev/null <<<"$2" || fail "jq $1"; }
 
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 3 and any(.[]; .provider == "codex") and any(.[]; .provider == "opencodego") and any(.[]; .provider == "deepseek")' "$out"
+assert_json 'length == 4 and any(.[]; .provider == "codex" and .activity.lastActivityAt == "2025-01-02T03:04:05Z") and any(.[]; .provider == "opencodego" and .activity.lastActivityAt == "2025-01-04T03:04:05Z") and any(.[]; .provider == "deepseek")' "$out"
 assert_json '.[] | select(.provider == "deepseek") | .credits | .remaining == 2.05 and .paidBalance == 2.05 and .grantedBalance == 0 and .currencyCode == "USD"' "$out"
+
+export FAKE_MODE=multiple-opencode
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and all(.[]; (.provider != "opencodego" or .activity == null))' "$out"
+unset FAKE_MODE
 
 export FAKE_MODE=unmatched
 out=$("$wrapper" usage --format json --json-only)
@@ -40,12 +69,44 @@ export FAKE_MODE=normal
 : >"$log"
 export FAKE_MODE=partial
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 2 and all(.[]; .provider != "opencodego")' "$out"
+assert_json 'length == 3 and all(.[]; .provider != "opencodego")' "$out"
 
-FAKE_MODE=fail-all
+unset FAKE_MODE KODEXBAR_CODEX_ACCOUNT_HOMES
+export HOME=$tmpdir/test-home
+export XDG_CONFIG_HOME=$tmpdir/xdg-config
+mkdir -p "$XDG_CONFIG_HOME/codexbar"
+auto_home_old=$tmpdir/auto-home-old
+auto_home_new=$tmpdir/auto-home-new
+mkdir -p "$auto_home_old/sessions" "$auto_home_new/sessions"
+touch -d '2025-01-02 03:04:05 UTC' "$auto_home_old/sessions/old.jsonl"
+touch -d '2025-01-03 03:04:05 UTC' "$auto_home_new/sessions/new.jsonl"
+jq -n --arg old "$auto_home_old" --arg new "$auto_home_new" '{providers:["ignored", {codexProfileHomePaths:[$old]}, {codexProfileHomePaths:$new}, 42]}' >"$XDG_CONFIG_HOME/codexbar/config.json"
+export FAKE_MODE=auto-codex
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'any(.[]; .provider == "codex" and .account == "account-b" and .activity.lastActivityAt == "2025-01-03T03:04:05Z") and any(.[]; .provider == "codex" and .account == "account-a" and .activity == null)' "$out"
+jq -n --arg old "$auto_home_old" --arg new "$auto_home_new" '{providers:{codex:{codexProfileHomePaths:[$old, $new]}, other:"ignored"}}' >"$XDG_CONFIG_HOME/codexbar/config.json"
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'any(.[]; .provider == "codex" and .account == "account-b" and .activity.lastActivityAt == "2025-01-03T03:04:05Z")' "$out"
+export FAKE_MODE_AUTO_RESULT=ambiguous
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'all(.[]; .provider != "codex" or .activity == null)' "$out"
+export FAKE_MODE_AUTO_RESULT=fail
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'all(.[]; .provider != "codex" or .activity == null)' "$out"
+unset FAKE_MODE FAKE_MODE_AUTO_RESULT XDG_CONFIG_HOME
+
+export FAKE_MODE=fail-all
 if "$wrapper" usage --format json --json-only >"$tmpdir/all.out" 2>"$tmpdir/all.err"; then fail 'all-provider failure returned success'; fi
 assert grep -q "all provider usage queries failed" "$tmpdir/all.err"
 unset FAKE_MODE
+export XDG_DATA_HOME=$tmpdir/missing-data
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'all(.[]; (.activity == null) or (.provider != "opencodego"))' "$out"
+unset KODEXBAR_CODEX_ACCOUNT_HOMES XDG_DATA_HOME
+
+assert grep -q 'function codexAccountKey' "$root/contents/ui/main.qml"
+assert grep -q 'keys.sort()' "$root/contents/ui/main.qml"
+assert grep -q 'entry.creditsRemaining > 0' "$root/contents/ui/main.qml"
 
 if "$wrapper" usage --account second >"$tmpdir/selector.out" 2>"$tmpdir/selector.err"; then fail 'no-provider account selector returned success'; fi
 assert grep -q 'account selection requires --provider codex' "$tmpdir/selector.err"

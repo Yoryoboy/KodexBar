@@ -8,7 +8,7 @@
 
 KodexBar is a native KDE Plasma widget inspired by [CodexBar](https://github.com/steipete/CodexBar). It keeps Codex, Claude, OpenAI, Gemini, Copilot, OpenRouter, Bedrock, GroqCloud, and other CodexBar-supported provider limits visible from a Plasma panel popup.
 
-The widget intentionally uses the upstream `codexbar` CLI as its data source instead of reimplementing provider backends. CodexBar owns auth, provider config, API calls, local CLI probing, and `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`; KodexBar focuses on the Plasma panel and popup UI.
+The widget intentionally uses the upstream `codexbar` CLI as its data source instead of reimplementing provider backends. CodexBar owns auth, provider config, API calls, local CLI probing, and `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`; KodexBar focuses on the Plasma panel and popup UI. The compact label also uses best-effort, local-only last-activity metadata for Codex accounts and the single OpenCode Go account.
 
 ![KodexBar widget screenshot](screenshot.png)
 
@@ -67,6 +67,8 @@ The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command.
 
 For the current DeepSeek payload shape, the wrapper defensively converts `usage.primary.resetDescription` such as `$2.05 (Paid: $2.05 / Granted: $0.00)` into structured `credits.remaining`, `paidBalance`, `grantedBalance`, and `currencyCode` fields. Unrecognized descriptions are left unchanged. Explicit Codex usage receives `--all-accounts` only when no account selector is present. Non-`usage` commands, including `cost`, pass through unchanged: usage is provider quota/balance data, while cost is a separate local/provider estimate scan.
 
+The compact label is reduced to a deterministic identity and both used percentages, for example `A1 · 46% / 31%`. Codex activity is attributed from filesystem metadata under candidate homes from string-valued `codexProfileHomePaths` in the local CodexBar config plus `${CODEX_HOME:-$HOME/.codex}`. `KODEXBAR_CODEX_ACCOUNT_HOMES` remains an explicit `account=home;...` override. The wrapper checks only the newest candidate home, runs one scoped Codex usage query to identify its account, and attaches the timestamp only when that identity is unambiguous. OpenCode Go activity reads only the newest `session.time_updated` value from its local SQLite database, defaulting to `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db`; `KODEXBAR_OPENCODE_DB` may override it. The wrapper emits timestamps only, never session contents, prompts, messages, project names, titles, credentials, or paths. Missing tools, databases, logs, schema differences, ambiguous accounts, or failed discovery simply omit activity metadata and preserve quota output. A missing activity timestamp falls back to the selected or first usable popup entry.
+
 To override upstream CLI discovery at runtime:
 
 ```sh
@@ -105,9 +107,9 @@ KodexBar exposes these Plasma widget settings:
 | Provider | `Best available`, `All enabled`, or a specific CodexBar provider ID. |
 | Source | `Best available`, `auto`, `web`, `cli`, `oauth`, or `api`. |
 | Refresh | Poll interval, from 10 to 3600 seconds. |
-| Show provider in panel | Include the provider name in the compact label. |
-| Show used percent in panel | Include the 5-hour Codex usage in the compact label, falling back to weekly usage when the 5-hour window is unavailable. |
-| Show credits in panel | Include remaining credits in the compact label when available. |
+| Show provider in panel | Include the reduced provider/account identity, such as `A1`, in the compact label. |
+| Show used percent in panel | Include both 5-hour and weekly used percentages when available. |
+| Show credits in panel | Include remaining credits only when a positive numeric balance is available. |
 | Show email in widget | Show the account email inside the popup when available. |
 | Fetch provider status | Add `--status` to CLI calls and display incident/maintenance state. |
 

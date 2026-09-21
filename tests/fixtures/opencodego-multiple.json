@@ -1,0 +1,4 @@
+[
+  {"provider":"opencodego","account":"go-a","usage":{"primary":{"remainingPercent":80},"secondary":{"remainingPercent":70}}},
+  {"provider":"opencodego","account":"go-b","usage":{"primary":{"remainingPercent":75},"secondary":{"remainingPercent":65}}}
+]

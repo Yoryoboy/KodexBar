@@ -61,6 +61,80 @@ PlasmoidItem {
         return entries.length > 0 ? entries[0] : null
     }
 
+    function isUsableEntry(entry) {
+        return entry && !entry.errorMessage && ((entry.rows && entry.rows.length > 0)
+            || entry.creditsRemaining !== null
+            || entry.codeReviewRemainingPercent !== null)
+    }
+
+    function activityTime(entry) {
+        if (!entry || !entry.lastActivityAt) {
+            return NaN
+        }
+        var timestamp = new Date(entry.lastActivityAt).getTime()
+        return isFinite(timestamp) ? timestamp : NaN
+    }
+
+    function compactEntry() {
+        var fallback = selectedEntry()
+        if (!isUsableEntry(fallback)) {
+            fallback = null
+            for (var i = 0; i < entries.length; i++) {
+                if (isUsableEntry(entries[i])) {
+                    fallback = entries[i]
+                    break
+                }
+            }
+        }
+        var newest = null
+        var newestTime = -Infinity
+        for (var j = 0; j < entries.length; j++) {
+            if (!isUsableEntry(entries[j])) {
+                continue
+            }
+            var time = activityTime(entries[j])
+            if (isFinite(time) && (newest === null || time > newestTime)) {
+                newest = entries[j]
+                newestTime = time
+            }
+        }
+        return newest || fallback || (entries.length > 0 ? entries[0] : null)
+    }
+
+    function codexAccountKey(entry) {
+        if (!entry) {
+            return ""
+        }
+        var account = String(entry.account || "")
+        return account.length > 0 ? account : entryKey(entry)
+    }
+
+    function codexAccountNumber(entry) {
+        var keys = []
+        for (var i = 0; i < entries.length; i++) {
+            if (String(entries[i].provider || "").toLowerCase() === "codex") {
+                var key = codexAccountKey(entries[i])
+                if (keys.indexOf(key) === -1) {
+                    keys.push(key)
+                }
+            }
+        }
+        keys.sort()
+        var ordinal = keys.indexOf(codexAccountKey(entry))
+        return ordinal >= 0 ? ordinal + 1 : 0
+    }
+
+    function compactIdentity(entry) {
+        var provider = String(entry && entry.provider || "").toLowerCase()
+        if (provider === "codex") {
+            return "A" + codexAccountNumber(entry)
+        }
+        if (provider === "opencode" || provider === "opencodego") {
+            return "OpenCode"
+        }
+        return entry && (entry.name || entry.provider) ? (entry.name || entry.provider) : i18n("Provider")
+    }
+
     function keepSelectionValid() {
         if (entries.length === 0) {
             selectedEntryKey = ""
@@ -176,35 +250,37 @@ PlasmoidItem {
         if (entries.length === 0) {
             return loading ? i18n("Loading") : i18n("No data")
         }
-        var first = selectedEntry()
-        if (first && (first.errorMessage || !first.rows || first.rows.length === 0)) {
-            first = null
-            for (var i = 0; i < entries.length; i++) {
-                if (!entries[i].errorMessage && entries[i].rows.length > 0) {
-                    first = entries[i]
-                    break
-                }
-            }
+        var entry = compactEntry()
+        if (!entry) {
+            return i18n("No data")
         }
-        if (first === null) {
-            first = entries[0]
+        if (entry.errorMessage) {
+            return (showProviderInPanel ? compactIdentity(entry) + " " : "")
+                + (entry.signedOut ? i18n("Sign in") : i18n("Error"))
         }
         var parts = []
         if (showProviderInPanel) {
-            parts.push(first.name || "Codex")
+            parts.push(compactIdentity(entry))
         }
-        if (first.errorMessage) {
-            parts.push(first.signedOut ? i18n("Sign in") : i18n("Error"))
-            return parts.join(" ")
+        if (showUsedPercentInPanel) {
+            var percentages = []
+            var primaryUsed = usedPercent(entry.primaryPercentLeft)
+            var secondaryUsed = usedPercent(entry.secondaryPercentLeft)
+            if (primaryUsed !== null) {
+                percentages.push(Math.round(primaryUsed) + "%")
+            }
+            if (secondaryUsed !== null) {
+                percentages.push(Math.round(secondaryUsed) + "%")
+            }
+            if (percentages.length > 0) {
+                parts.push(percentages.join(" / "))
+            }
         }
-        var displayedUsed = usedPercent(first.primaryPercentLeft)
-        if (displayedUsed !== null && showUsedPercentInPanel) {
-            parts.push(Math.round(displayedUsed) + "%")
+        if (showCreditsInPanel && typeof entry.creditsRemaining === "number"
+                && isFinite(entry.creditsRemaining) && entry.creditsRemaining > 0) {
+            parts.push(formatCredits(entry.creditsRemaining))
         }
-        if (first.creditsRemaining !== null && first.creditsRemaining !== undefined && showCreditsInPanel) {
-            parts.push(formatCredits(first.creditsRemaining))
-        }
-        return parts.join(" ")
+        return parts.join(" · ")
     }
 
     function formatNumber(value) {
@@ -990,6 +1066,7 @@ PlasmoidItem {
             additionalRows: providerKey === "deepseek" ? [] : additionalRows,
             providerCostRow: costRow,
             updatedAt: usage.updatedAt || entry.updatedAt || "",
+            lastActivityAt: entry.activity && typeof entry.activity === "object" ? entry.activity.lastActivityAt || "" : "",
             status: entry.status,
             statusIndicator: status ? (status.indicator || "unknown") : "",
             statusDescription: status ? (status.description || "") : "",
@@ -1067,7 +1144,7 @@ PlasmoidItem {
             spacing: Kirigami.Units.smallSpacing
 
             Kirigami.Icon {
-                source: root.providerIconSource(root.entries.length > 0 ? root.entries[0].provider : "codex")
+                source: root.providerIconSource(root.compactEntry() ? root.compactEntry().provider : "codex")
                 isMask: true
                 color: Kirigami.Theme.textColor
                 implicitWidth: Kirigami.Units.iconSizes.small
