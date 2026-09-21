@@ -36,6 +36,25 @@ FAKE
 chmod 755 "$fake"
 export FAKE_LOG=$log FAKE_FIXTURES=$fixtures KODEXBAR_CODEXBAR_COMMAND=$fake
 
+fake_nan=$tmpdir/nan
+cat >"$fake_nan" <<'FAKENAN'
+#!/usr/bin/env bash
+case ${FAKE_NAN_MODE:-normal} in
+    metrics-fail) exit 1 ;;
+    metrics-invalid) printf 'not json\n'; exit 0 ;;
+esac
+if [[ ${1-} == me ]]; then
+    [[ ${FAKE_NAN_MODE:-normal} == me-fail ]] && exit 1
+    cat "$FAKE_FIXTURES/nan-me.json"
+    exit 0
+fi
+cat "$FAKE_FIXTURES/nan-metrics.json"
+FAKENAN
+chmod 755 "$fake_nan"
+# Disable NaN for every case that does not exercise it, so the suite is deterministic
+# even when the host has a real `nan` CLI installed.
+export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
+
 codex_home_a=$tmpdir/codex-home-a
 codex_home_b=$tmpdir/codex-home-b
 mkdir -p "$codex_home_a/sessions" "$codex_home_b/sessions"
@@ -55,6 +74,30 @@ assert_json() { jq -e "$1" >/dev/null <<<"$2" || fail "jq $1"; }
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'length == 4 and any(.[]; .provider == "codex" and .activity.lastActivityAt == "2025-01-02T03:04:05Z") and any(.[]; .provider == "opencodego" and .activity.lastActivityAt == "2025-01-04T03:04:05Z") and any(.[]; .provider == "deepseek")' "$out"
 assert_json '.[] | select(.provider == "deepseek") | .credits | .remaining == 2.05 and .paidBalance == 2.05 and .grantedBalance == 0 and .currencyCode == "USD"' "$out"
+
+export KODEXBAR_NAN_COMMAND=$fake_nan
+unset FAKE_NAN_MODE
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli" and .account == "nan@example.com" and .usage.updatedAt == "2026-09-21T16:11:42Z" and .usage.nan.monthToDate.totalTokens == 930278 and .usage.nan.last30d.totalTokens == 930278)' "$out"
+assert_json '.[] | select(.provider == "nan") | .usage.nan.monthToDate.byModel[0].model == "deepseek-v4-flash" and .usage.nan.monthToDate.byModel[0].inputTokens == 690429 and .usage.nan.monthToDate.byModel[0].outputTokens == 10442' "$out"
+export FAKE_NAN_MODE=me-fail
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and (.account == null) and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
+unset FAKE_NAN_MODE
+
+# A failed, invalid, or missing NaN binary is silent; the other providers still aggregate.
+export KODEXBAR_NAN_COMMAND=$tmpdir/missing-nan
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
+export KODEXBAR_NAN_COMMAND=$fake_nan
+export FAKE_NAN_MODE=metrics-fail
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
+export FAKE_NAN_MODE=metrics-invalid
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
+unset FAKE_NAN_MODE
+export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
 
 export FAKE_MODE=multiple-opencode
 out=$("$wrapper" usage --format json --json-only)

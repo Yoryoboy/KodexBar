@@ -147,6 +147,49 @@ enrich_activity() {
     fi
 }
 
+nan_command() {
+    local configured candidate
+    configured=${KODEXBAR_NAN_COMMAND-}
+    if [[ -n $configured ]]; then
+        if [[ $configured == */* ]]; then
+            candidate=$configured
+        else
+            candidate=$(command -v -- "$configured" 2>/dev/null || true)
+        fi
+    else
+        candidate=$(command -v nan 2>/dev/null || true)
+        [[ -n $candidate ]] || candidate=${XDG_BIN_HOME:-$HOME/.local/bin}/nan
+    fi
+
+    if [[ -z ${candidate:-} || ! -x $candidate ]]; then
+        return 1
+    fi
+    printf '%s\n' "$candidate"
+}
+
+# nan_usage_entry transforms `nan metrics usage` into a CodexBar-shaped entry so the
+# popup can render it. NaN is optional: any failure keeps the aggregate intact.
+nan_usage_entry() {
+    local output=$1 command metrics identity account updated_at
+    command=$(nan_command) || return 1
+    metrics=$("$command" metrics usage 2>/dev/null) || return 1
+    jq -e . >/dev/null 2>&1 <<<"$metrics" || return 1
+
+    account=""
+    identity=$("$command" me 2>/dev/null || true)
+    if [[ -n $identity ]] && jq -e . >/dev/null 2>&1 <<<"$identity"; then
+        account=$(jq -r '.email // empty' <<<"$identity" 2>/dev/null || true)
+    fi
+
+    updated_at=$(jq -r '.monthToDate.cachedAt // .allTime.cachedAt // empty' <<<"$metrics" 2>/dev/null || true)
+
+    jq -n --argjson metrics "$metrics" --arg account "$account" --arg updatedAt "$updated_at" '
+        {provider: "nan", source: "cli"}
+        + (if $account != "" then {account: $account} else {} end)
+        + {usage: ({nan: $metrics} + (if $updatedAt != "" then {updatedAt: $updatedAt} else {} end))}
+    ' >"$output"
+}
+
 if [[ ${1-} != usage ]]; then
     exec "$upstream" "$@"
 fi
@@ -194,6 +237,14 @@ if (( has_provider == 0 )); then
     run_provider() {
         local name=$1 output=$tmpdir/$1.json
         shift
+        if [[ $name == nan ]]; then
+            # NaN is not a codexbar provider: query its own CLI and transform the payload.
+            if nan_usage_entry "$output"; then
+                outputs+=("$output")
+                successes=$((successes + 1))
+            fi
+            return 0
+        fi
         if "$upstream" "${original_args[@]}" --format json --json-only "$@" >"$output" 2>"$tmpdir/$name.stderr" \
             && jq -e . "$output" >/dev/null 2>&1; then
             if [[ $name == deepseek ]]; then
@@ -219,6 +270,7 @@ if (( has_provider == 0 )); then
     run_provider codex --provider codex --all-accounts
     run_provider opencode --provider opencodego --source auto
     run_provider deepseek --provider deepseek --source api
+    run_provider nan
 
     if (( successes == 0 )); then
         printf 'kodexbar-multi: all provider usage queries failed; check codexbar credentials and KODEXBAR_CODEXBAR_COMMAND\n' >&2

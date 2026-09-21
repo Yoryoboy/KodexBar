@@ -1,0 +1,20 @@
+{
+  "allTime": {
+    "byModel": [{"inputTokens": 690429, "model": "deepseek-v4-flash", "outputTokens": 10442}],
+    "cachedAt": "2026-09-21T16:11:42Z",
+    "totalTokens": 930278
+  },
+  "last24h": {
+    "byModel": [{"inputTokens": 690429, "model": "deepseek-v4-flash", "outputTokens": 10442}],
+    "totalTokens": 930278
+  },
+  "last30d": {
+    "byModel": [{"inputTokens": 690429, "model": "deepseek-v4-flash", "outputTokens": 10442}],
+    "totalTokens": 930278
+  },
+  "monthToDate": {
+    "byModel": [{"inputTokens": 690429, "model": "deepseek-v4-flash", "outputTokens": 10442}],
+    "totalTokens": 930278
+  },
+  "timeSeries": []
+}
