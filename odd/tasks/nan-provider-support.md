@@ -26,6 +26,7 @@ Add nan.builders (NaN) as a provider in the `kodexbar-multi` aggregate wrapper a
 - [x] Run the full wrapper test suite and QML syntax checks; deploy with `install.sh` if verified.
 
 ## Evidence
+- Native RDD review completed and approved: lineage `review-43b91be039b099c8`, target `sha256:80806bd1…`, 4 lenses (risk, resilience, readability, reliability) captured; acknowledgement burned (`gentle-ai.review-acknowledged/v1`). Findings: 7 advisory/non-blocking (4 SUGGESTION, 2 WARNING informational, 1 SUGGESTION) — no corrections opened. The readability lens relay initially failed repeatedly (non-JSON reviewer output) and succeeded after a relay fix.
 - `bash tests/test-wrapper.sh`: all tests passed (pre-existing cases plus new NaN cases: aggregate includes nan entry, `nan me` failure omits account, missing/metrics-fail/invalid-JSON nan stays silent and other providers still aggregate).
 - `bash -n bin/kodexbar-multi`: clean.
 - `/usr/lib/qt6/bin/qmllint contents/ui/main.qml`: exit 0; no error-level diagnostics (pre-existing style warnings only).
