@@ -34,4 +34,7 @@ Add nan.builders (NaN) as a provider in the `kodexbar-multi` aggregate wrapper a
 - Native review assess was unavailable (empty native output); risk treated as high, so an independent verifier was required. `gentle-ai-verify` failed twice at bootstrap (runtime defect, zero tool calls); verification was executed inline by the orchestrator as fallback with the same checks.
 
 ## Commits
-- (recorded after work-unit commits)
+- `243c935` feat: add NaN provider to aggregate usage wrapper (wrapper + tests + fixtures)
+- `8b53247` feat: render NaN token usage in popup (QML + nan.svg icon)
+- `b542b15` docs: document NaN provider support (README)
+- `c083c2b` docs: record NaN provider support tasks (feature doc)
