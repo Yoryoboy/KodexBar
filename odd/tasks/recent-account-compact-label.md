@@ -79,8 +79,8 @@ A compact `A# · 46% / 31%` label makes the active account and both meaningful q
 - `git diff --check`: passed.
 - Independent verification: PASS; no blockers. `qmllint` remains unavailable.
 - Native review: candidate-scoped consent declined; no lineage or receipt created.
-- Commit: pending explicit user authorization.
+- Work-unit commit: `231772a` (`feat: show most recently active usage account`), pushed to `origin/main`.
 
 ## Next Step
 
-Visually validate the compact label in Plasma, then commit and/or deploy only with explicit user authorization.
+Monitor runtime account switching; if Codex activity remains unattributed, diagnose its scoped home identity mapping in a follow-up work unit.
