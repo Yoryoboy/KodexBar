@@ -34,6 +34,9 @@ Add nan.builders (NaN) as a provider in the `kodexbar-multi` aggregate wrapper a
 - End-to-end fake harness: `KODEXBAR_NAN_COMMAND=<fake nan> KODEXBAR_CODEXBAR_COMMAND=/bin/false kodexbar-multi usage` returned a length-1 array with `provider == "nan"`, `source == "cli"`, `account == "nan@example.com"`, and `usage.nan.monthToDate.totalTokens == 930278`.
 - Native review assess was unavailable (empty native output); risk treated as high, so an independent verifier was required. `gentle-ai-verify` failed twice at bootstrap (runtime defect, zero tool calls); verification was executed inline by the orchestrator as fallback with the same checks.
 
+## Open issue (handoff to next session)
+- [ ] User reports NaN card still NOT visible in the popup after plasmashell restart, despite: installed QML byte-identical to reviewed source, zero QML errors in journal, and the wrapper returning the nan entry in the plasmashell environment at verification time. The `nan` CLI fails in intermittent multi-minute streaks (proven), which omits the entry silently, but the user's persistent failure suggests something else may be involved. Next steps: inspect the actual widget rendering (screenshot), check refresh cadence/selection state, verify the widget's DataSource command line actually executed, consider nan CLI-side reporting to helmcode/nan-cli.
+
 ## Commits
 - `243c935` feat: add NaN provider to aggregate usage wrapper (wrapper + tests + fixtures)
 - `8b53247` feat: render NaN token usage in popup (QML + nan.svg icon)
