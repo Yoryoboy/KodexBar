@@ -132,6 +132,9 @@ PlasmoidItem {
         if (provider === "opencode" || provider === "opencodego") {
             return "OpenCode"
         }
+        if (provider === "nan") {
+            return "NaN"
+        }
         return entry && (entry.name || entry.provider) ? (entry.name || entry.provider) : i18n("Provider")
     }
 
@@ -786,6 +789,7 @@ PlasmoidItem {
             "cursor": "Cursor",
             "opencode": "OpenCode",
             "opencodego": "OpenCode Go",
+            "nan": "NaN",
             "factory": "Droid",
             "devin": "Devin",
             "zai": "z.ai",
@@ -842,6 +846,7 @@ PlasmoidItem {
             "cursor": "cursor",
             "opencode": "opencode",
             "opencodego": "opencodego",
+            "nan": "nan",
             "factory": "factory",
             "devin": "devin",
             "zai": "zai",
@@ -983,6 +988,51 @@ PlasmoidItem {
         return summary
     }
 
+    function nanTokenRows(nan) {
+        var rows = []
+        if (!nan || typeof nan !== "object") {
+            return rows
+        }
+        var windows = [
+            { title: i18n("24h"), data: nan.last24h },
+            { title: i18n("30d"), data: nan.last30d },
+            { title: i18n("Month to date"), data: nan.monthToDate }
+        ]
+        for (var i = 0; i < windows.length; i++) {
+            var data = windows[i].data
+            if (!data || typeof data !== "object"
+                    || typeof data.totalTokens !== "number" || !isFinite(data.totalTokens)) {
+                continue
+            }
+            rows.push({
+                title: windows[i].title,
+                percentLeft: null,
+                resetsAt: null,
+                detail: "",
+                usageKnown: false,
+                value: i18n("%1 tokens", formatTokenCount(data.totalTokens))
+            })
+        }
+        var byModel = nan.monthToDate && nan.monthToDate.byModel instanceof Array ? nan.monthToDate.byModel : []
+        for (var j = 0; j < byModel.length; j++) {
+            var model = byModel[j]
+            if (!model || typeof model !== "object" || !model.model) {
+                continue
+            }
+            var input = typeof model.inputTokens === "number" ? model.inputTokens : 0
+            var output = typeof model.outputTokens === "number" ? model.outputTokens : 0
+            rows.push({
+                title: String(model.model),
+                percentLeft: null,
+                resetsAt: null,
+                detail: "",
+                usageKnown: false,
+                value: i18n("%1 in / %2 out", formatTokenCount(input), formatTokenCount(output))
+            })
+        }
+        return rows
+    }
+
     function normalizeEntry(entry) {
         var usage = entry.usage && typeof entry.usage === "object" ? entry.usage : {}
         var identity = usage.identity && typeof usage.identity === "object" ? usage.identity : {}
@@ -997,7 +1047,8 @@ PlasmoidItem {
         var rows = []
         var additionalRows = []
         var providerKey = String(entry.provider || "").toLowerCase()
-        var windows = providerKey === "deepseek" ? []
+        var nanRows = providerKey === "nan" ? nanTokenRows(usage.nan) : []
+        var windows = providerKey === "deepseek" || providerKey === "nan" ? []
             : (providerKey === "opencode" || providerKey === "opencodego")
             ? [{ title: windowTitle(primary, i18n("Primary")), data: primary }, { title: windowTitle(secondary, i18n("Weekly")), data: secondary }, { title: windowTitle(tertiary, i18n("Monthly")), data: tertiary }]
             : [{ title: windowTitle(primary, i18n("5-hour")), data: primary }, { title: windowTitle(secondary, i18n("Weekly")), data: secondary }]
@@ -1062,7 +1113,7 @@ PlasmoidItem {
             resetCredits: usage.codexResetCredits && typeof usage.codexResetCredits === "object" ? usage.codexResetCredits : null,
             confidence: usage.dataConfidence || entry.dataConfidence || usage.confidence || entry.confidence || (entry.meta && entry.meta.confidence) || "",
             creditsCurrencyCode: credits && credits.currencyCode ? credits.currencyCode : (usage.currencyCode || "USD"),
-            rows: rows,
+            rows: providerKey === "nan" ? nanRows : rows,
             additionalRows: providerKey === "deepseek" ? [] : additionalRows,
             providerCostRow: costRow,
             updatedAt: usage.updatedAt || entry.updatedAt || "",
@@ -1075,6 +1126,20 @@ PlasmoidItem {
             errorKind: error ? (error.kind || "") : "",
             signedOut: false
         }
+    }
+
+    function rowValueText(row) {
+        if (row && row.value !== undefined && row.value !== null && String(row.value).length > 0) {
+            return String(row.value)
+        }
+        return formatUsedPercent(row ? row.percentLeft : null, row ? row.usageKnown : undefined)
+    }
+
+    function rowValueColor(row) {
+        if (row && row.value !== undefined && row.value !== null && String(row.value).length > 0) {
+            return Kirigami.Theme.textColor
+        }
+        return usageAccent(row ? row.percentLeft : null)
     }
 
     function barColor(value) {
@@ -1386,8 +1451,9 @@ PlasmoidItem {
                                     var provider = String(modelData.provider || "").toLowerCase()
                                     return provider === "opencode" || provider === "opencodego"
                                 }
+                                readonly property bool isTokenGrid: String(modelData.provider || "").toLowerCase() === "nan"
                                 Layout.fillWidth: true
-                                columns: usagePanels.isOpenCode ? 3 : 2
+                                columns: usagePanels.isOpenCode ? 3 : (usagePanels.isTokenGrid ? 1 : 2)
                                 columnSpacing: Kirigami.Units.smallSpacing
                                 rowSpacing: Kirigami.Units.smallSpacing
                                 Repeater {
@@ -1429,8 +1495,8 @@ PlasmoidItem {
                                                 }
 
                                                 PlasmaComponents.Label {
-                                                    text: root.formatUsedPercent(modelData.percentLeft, modelData.usageKnown)
-                                                    color: root.usageAccent(modelData.percentLeft)
+                                                    text: root.rowValueText(modelData)
+                                                    color: root.rowValueColor(modelData)
                                                 }
                                             }
 
@@ -1447,8 +1513,8 @@ PlasmoidItem {
                                                 }
 
                                                 PlasmaComponents.Label {
-                                                    text: root.formatUsedPercent(modelData.percentLeft, modelData.usageKnown)
-                                                    color: root.usageAccent(modelData.percentLeft)
+                                                    text: root.rowValueText(modelData)
+                                                    color: root.rowValueColor(modelData)
                                                     font.weight: Font.DemiBold
                                                     Layout.fillWidth: true
                                                 }
