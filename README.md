@@ -6,7 +6,7 @@
 [![CodexBar CLI](https://img.shields.io/badge/powered%20by-CodexBar%20CLI-0a0a0c?style=flat-square)](https://github.com/steipete/CodexBar)
 [![License: MIT](https://img.shields.io/badge/license-MIT-6e5aff?style=flat-square)](LICENSE)
 
-KodexBar is a native KDE Plasma widget inspired by [CodexBar](https://github.com/steipete/CodexBar). It keeps Codex, Claude, OpenAI, Gemini, Copilot, OpenRouter, Bedrock, GroqCloud, and other CodexBar-supported provider limits visible from a Plasma panel popup.
+KodexBar is a native KDE Plasma widget inspired by [CodexBar](https://github.com/steipete/CodexBar). It keeps Codex, Claude, OpenAI, Gemini, Copilot, OpenRouter, Bedrock, GroqCloud, and other CodexBar-supported provider limits visible from a Plasma panel popup. The bundled wrapper also surfaces [nan.builders](https://nan.builders) (NaN) subscription token usage, which is token-metered rather than rate-limited.
 
 The widget intentionally uses the upstream `codexbar` CLI as its data source instead of reimplementing provider backends. CodexBar owns auth, provider config, API calls, local CLI probing, and `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`; KodexBar focuses on the Plasma panel and popup UI. The compact label also uses best-effort, local-only last-activity metadata for Codex accounts and the single OpenCode Go account.
 
@@ -26,6 +26,7 @@ The widget intentionally uses the upstream `codexbar` CLI as its data source ins
 - Bash and `jq`
 - `kpackagetool6`
 - Upstream `codexbar` CLI on `PATH`, or a full executable path configured in the widget settings or `KODEXBAR_CODEXBAR_COMMAND`
+- Optional: the `nan` CLI on `PATH` (or via `KODEXBAR_NAN_COMMAND`) with `nan auth login` done, to include NaN token usage in the aggregate
 
 The installer does not download dependencies. Install the upstream CLI with Homebrew on Linux:
 
@@ -63,9 +64,11 @@ The installer does not edit `plasma-org.kde.plasma.desktop-appletsrc` or restart
 
 ## Bundled multi-provider wrapper
 
-The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command. A no-provider `usage` query asks Codex for `--all-accounts`, OpenCode Go for `--source auto`, and DeepSeek for `--source api`, returning all successful JSON entries. Successful provider data is retained when another provider fails; failed provider output is omitted. The command fails only if all providers fail or the resulting JSON is invalid.
+The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command. A no-provider `usage` query asks Codex for `--all-accounts`, OpenCode Go for `--source auto`, DeepSeek for `--source api`, and the separate `nan` CLI for its token metrics, returning all successful JSON entries. Successful provider data is retained when another provider fails; failed provider output is omitted. The command fails only if all providers fail or the resulting JSON is invalid.
 
 For the current DeepSeek payload shape, the wrapper defensively converts `usage.primary.resetDescription` such as `$2.05 (Paid: $2.05 / Granted: $0.00)` into structured `credits.remaining`, `paidBalance`, `grantedBalance`, and `currencyCode` fields. Unrecognized descriptions are left unchanged. Explicit Codex usage receives `--all-accounts` only when no account selector is present. Non-`usage` commands, including `cost`, pass through unchanged: usage is provider quota/balance data, while cost is a separate local/provider estimate scan.
+
+NaN is not a CodexBar provider, so its runner never calls the upstream `codexbar` CLI. The wrapper resolves the `nan` binary from `KODEXBAR_NAN_COMMAND` when set, then `nan` on `PATH`, then `${XDG_BIN_HOME:-$HOME/.local/bin}/nan`, and skips it silently when no executable is found. It runs `nan metrics usage`, validates the JSON, and optionally runs `nan me` to attach `.email` as the account; a failed `nan me` still emits the entry without an account. The raw metrics are nested under `usage.nan`, with `usage.updatedAt` taken from `monthToDate.cachedAt` or `allTime.cachedAt` when present. NaN has no rate-limit windows and no credit balance, so the popup renders token totals per window plus a per-model breakdown instead of percentage bars or credits.
 
 The compact label is reduced to a deterministic identity and both used percentages, for example `A1 · 46% / 31%`. Codex activity is attributed from filesystem metadata under candidate homes from string-valued `codexProfileHomePaths` in the local CodexBar config plus `${CODEX_HOME:-$HOME/.codex}`. `KODEXBAR_CODEX_ACCOUNT_HOMES` remains an explicit `account=home;...` override. The wrapper checks only the newest candidate home, runs one scoped Codex usage query to identify its account, and attaches the timestamp only when that identity is unambiguous. OpenCode Go activity reads only the newest `session.time_updated` value from its local SQLite database, defaulting to `${XDG_DATA_HOME:-$HOME/.local/share}/opencode/opencode.db`; `KODEXBAR_OPENCODE_DB` may override it. The wrapper emits timestamps only, never session contents, prompts, messages, project names, titles, credentials, or paths. Missing tools, databases, logs, schema differences, ambiguous accounts, or failed discovery simply omit activity metadata and preserve quota output. A missing activity timestamp falls back to the selected or first usable popup entry.
 
@@ -76,6 +79,14 @@ export KODEXBAR_CODEXBAR_COMMAND=/opt/codexbar/bin/codexbar
 ```
 
 This variable must be present in Plasma's runtime environment; setting it only while running `install.sh` does not persist it. Without the override, the wrapper uses `codexbar` from `PATH`, then `${XDG_BIN_HOME:-$HOME/.local/bin}/codexbar`.
+
+To override the separate NaN CLI discovery at runtime:
+
+```sh
+export KODEXBAR_NAN_COMMAND=/opt/nan/bin/nan
+```
+
+This variable only affects the bundled wrapper's NaN runner and must likewise be present in Plasma's runtime environment. Without the override, the wrapper uses `nan` from `PATH`, then `${XDG_BIN_HOME:-$HOME/.local/bin}/nan`, and skips NaN when neither exists.
 
 ## Usage
 
@@ -89,6 +100,7 @@ The popup renders common CodexBar CLI fields:
 
 - session, weekly, tertiary, and extra rate-limit windows
 - reset countdowns and usage bars
+- NaN token totals per window (24h, 30d, month to date) and per-model input/output breakdown
 - provider spend/budget rows
 - credit balances
 - OpenAI dashboard summaries where present
@@ -174,6 +186,7 @@ Uninstall preserves an unrecognized user-owned `kodexbar-multi`, all CodexBar cr
 | Status never appears | Enable **Fetch provider status** in widget settings. |
 | `kodexbar-multi` cannot find upstream CodexBar | Confirm `codexbar` is executable, or export `KODEXBAR_CODEXBAR_COMMAND` in the environment that launches Plasma. |
 | Only some aggregate providers appear | Check the unavailable provider's credentials/source; successful providers are intentionally preserved. |
+| NaN usage never appears | Install the `nan` CLI (`nan auth login`) or export `KODEXBAR_NAN_COMMAND` to its executable path in the environment that launches Plasma. |
 | Installer refuses a dependency | Install Bash, `jq`, `kpackagetool6`, or upstream `codexbar`; the installer never downloads dependencies. |
 
 ## License
