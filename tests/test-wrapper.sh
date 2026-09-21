@@ -37,11 +37,22 @@ chmod 755 "$fake"
 export FAKE_LOG=$log FAKE_FIXTURES=$fixtures KODEXBAR_CODEXBAR_COMMAND=$fake
 
 fake_nan=$tmpdir/nan
+nan_counter=$tmpdir/nan-metrics-count
+export FAKE_NAN_COUNTER=$nan_counter
 cat >"$fake_nan" <<'FAKENAN'
 #!/usr/bin/env bash
 case ${FAKE_NAN_MODE:-normal} in
     metrics-fail) exit 1 ;;
     metrics-invalid) printf 'not json\n'; exit 0 ;;
+    metrics-flaky)
+        # Fail only the first `metrics usage` call; the `me` call keeps succeeding.
+        if [[ ${1-} == metrics ]]; then
+            count=0
+            [[ -f $FAKE_NAN_COUNTER ]] && count=$(cat "$FAKE_NAN_COUNTER")
+            printf '%s\n' "$((count + 1))" >"$FAKE_NAN_COUNTER"
+            (( count == 0 )) && exit 1
+        fi
+        ;;
 esac
 if [[ ${1-} == me ]]; then
     [[ ${FAKE_NAN_MODE:-normal} == me-fail ]] && exit 1
@@ -96,6 +107,12 @@ assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
 export FAKE_NAN_MODE=metrics-invalid
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
+# A transient first `metrics usage` failure is recovered by the single retry.
+export FAKE_NAN_MODE=metrics-flaky
+: >"$nan_counter"
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .account == "nan@example.com" and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
+assert grep -q '^2$' "$nan_counter"
 unset FAKE_NAN_MODE
 export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
 

@@ -170,9 +170,17 @@ nan_command() {
 # nan_usage_entry transforms `nan metrics usage` into a CodexBar-shaped entry so the
 # popup can render it. NaN is optional: any failure keeps the aggregate intact.
 nan_usage_entry() {
-    local output=$1 command metrics identity account updated_at
+    local output=$1 command metrics identity account updated_at attempt
     command=$(nan_command) || return 1
-    metrics=$("$command" metrics usage 2>/dev/null) || return 1
+    # `nan metrics usage` fails transiently in streaks; one retry with a short backoff
+    # recovers the common case. Invalid JSON is not retried and is handled below.
+    metrics=""
+    for attempt in 1 2; do
+        metrics=$("$command" metrics usage 2>/dev/null) && [[ -n $metrics ]] && break
+        metrics=""
+        (( attempt < 2 )) && sleep 2
+    done
+    [[ -n $metrics ]] || return 1
     jq -e . >/dev/null 2>&1 <<<"$metrics" || return 1
 
     account=""
