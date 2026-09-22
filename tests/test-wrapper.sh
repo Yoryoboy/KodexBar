@@ -168,6 +168,78 @@ assert grep -q 'function codexAccountKey' "$root/contents/ui/main.qml"
 assert grep -q 'keys.sort()' "$root/contents/ui/main.qml"
 assert grep -q 'entry.creditsRemaining > 0' "$root/contents/ui/main.qml"
 
+# candidateList() must recognize both aggregate wrapper basenames -- the legacy
+# `codexbar-multi` and the bundled `kodexbar-multi` -- as a single aggregate
+# query, while keeping the upstream per-provider fallback for other commands.
+# The regression exercises the function extracted from main.qml when a QML test
+# runtime is present; otherwise it degrades to a structural check on that same
+# function (reduced coverage reported below).
+candidate_source=$(awk '
+    /^    function candidateList\(\) \{$/ { capture = 1 }
+    capture { print }
+    capture && /^    \}$/ { exit }
+' "$root/contents/ui/main.qml")
+[[ -n $candidate_source ]] || fail 'candidateList() was not found in contents/ui/main.qml'
+
+qml_test_runner=/usr/lib/qt6/bin/qmltestrunner
+[[ -x $qml_test_runner ]] || qml_test_runner=$(command -v qmltestrunner || true)
+if [[ -x $qml_test_runner ]]; then
+    cat >"$tmpdir/tst_candidates.qml" <<QML
+import QtQuick
+import QtTest
+
+Item {
+    property string codexbarCommand: "codexbar"
+    property string selectedProvider: "detect"
+    property string selectedSource: "detect"
+
+$candidate_source
+
+    function listFor(command) {
+        codexbarCommand = command
+        return candidateList()
+    }
+
+    TestCase {
+        name: "candidateList"
+
+        function test_bundled_aggregate_name() {
+            var candidates = listFor("/home/user/.local/bin/kodexbar-multi")
+            compare(candidates.length, 1)
+            compare(candidates[0].provider, "")
+            compare(candidates[0].source, "")
+        }
+
+        function test_legacy_aggregate_name() {
+            var candidates = listFor("codexbar-multi")
+            compare(candidates.length, 1)
+            compare(candidates[0].provider, "")
+            compare(candidates[0].source, "")
+        }
+
+        function test_upstream_fallback_preserved() {
+            var candidates = listFor("codexbar")
+            verify(candidates.length > 1)
+            compare(candidates[0].provider, "codex")
+            compare(candidates[0].source, "cli")
+        }
+
+        function test_similar_name_falls_back() {
+            var candidates = listFor("kodexbar-multi-extra")
+            verify(candidates.length > 1)
+            compare(candidates[0].provider, "codex")
+        }
+    }
+}
+QML
+    QT_QPA_PLATFORM=offscreen "$qml_test_runner" -input "$tmpdir/tst_candidates.qml" >"$tmpdir/qmltest.out" 2>&1 \
+        || fail "candidateList regression failed: $(cat "$tmpdir/qmltest.out")"
+else
+    printf 'WARN: qmltestrunner unavailable; candidateList regression fell back to structural checks\n' >&2
+    grep -q 'codexbar-multi' <<<"$candidate_source" || fail 'legacy aggregate basename no longer recognized in candidateList()'
+    grep -q 'kodexbar-multi' <<<"$candidate_source" || fail 'bundled aggregate basename not recognized in candidateList()'
+fi
+
 if "$wrapper" usage --account second >"$tmpdir/selector.out" 2>"$tmpdir/selector.err"; then fail 'no-provider account selector returned success'; fi
 assert grep -q 'account selection requires --provider codex' "$tmpdir/selector.err"
 

@@ -496,7 +496,9 @@ PlasmoidItem {
         if (provider === "detect" && source === "detect") {
             result.push({ provider: "", source: "" })
             var commandName = String(codexbarCommand).split(/[\\/]/).pop()
-            if (commandName === "codexbar-multi") {
+            // The bundled wrapper installs as `kodexbar-multi`; the legacy
+            // `codexbar-multi` name stays supported for upgraded configurations.
+            if (commandName === "codexbar-multi" || commandName === "kodexbar-multi") {
                 return result
             }
         }
