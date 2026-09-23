@@ -64,7 +64,7 @@ The installer does not edit `plasma-org.kde.plasma.desktop-appletsrc` or restart
 
 ## Bundled multi-provider wrapper
 
-The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command. A no-provider `usage` query asks Codex for `--all-accounts`, OpenCode Go for `--source auto`, DeepSeek for `--source api`, and the separate `nan` CLI for its token metrics, returning all successful JSON entries. Successful provider data is retained when another provider fails; failed provider output is omitted. The command fails only if all providers fail or the resulting JSON is invalid.
+The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command. A no-provider `usage` query asks Codex for `--all-accounts`, OpenCode Go for `--source auto`, DeepSeek for `--source api`, and the separate `nan` CLI for its token metrics, returning all successful JSON entries. Aggregate entry order is a tested contract: the Codex accounts first, then NaN, then OpenCode Go, then DeepSeek. Successful provider data is retained when another provider fails; failed provider output is omitted. The command fails only if all providers fail or the resulting JSON is invalid.
 
 For the current DeepSeek payload shape, the wrapper defensively converts `usage.primary.resetDescription` such as `$2.05 (Paid: $2.05 / Granted: $0.00)` into structured `credits.remaining`, `paidBalance`, `grantedBalance`, and `currencyCode` fields. Unrecognized descriptions are left unchanged. Explicit Codex usage receives `--all-accounts` only when no account selector is present. Non-`usage` commands, including `cost`, pass through unchanged: usage is provider quota/balance data, while cost is a separate local/provider estimate scan.
 

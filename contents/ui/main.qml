@@ -1232,6 +1232,8 @@ PlasmoidItem {
         id: full
         readonly property int popupMargin: Kirigami.Units.largeSpacing * 2
         readonly property int maxPopupHeight: Kirigami.Units.gridUnit * 44
+        readonly property int maxPopupWidth: Kirigami.Units.gridUnit * 44
+        readonly property real accountCardWidth: Kirigami.Units.gridUnit * 6.2
 
         readonly property int maxCardRows: {
             var rows = 0
@@ -1244,11 +1246,17 @@ PlasmoidItem {
             + Kirigami.Theme.defaultFont.pixelSize * (2 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
             + Kirigami.Units.smallSpacing * (3 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
         readonly property int naturalPopupHeight: Math.min(content.implicitHeight + popupMargin * 2, maxPopupHeight)
+        readonly property real cardRowWidth: root.entries.length > 0
+            ? root.entries.length * accountCardWidth + (root.entries.length - 1) * Kirigami.Units.smallSpacing
+            : 0
+        readonly property real naturalPopupWidth: Math.max(Kirigami.Units.gridUnit * 30,
+            Math.min(cardRowWidth + popupMargin * 2, maxPopupWidth))
 
-        Layout.minimumWidth: Kirigami.Units.gridUnit * 30
+        Layout.minimumWidth: naturalPopupWidth
         Layout.minimumHeight: naturalPopupHeight
-        Layout.preferredWidth: Kirigami.Units.gridUnit * 34
+        Layout.preferredWidth: naturalPopupWidth
         Layout.preferredHeight: naturalPopupHeight
+        Layout.maximumWidth: naturalPopupWidth
         Layout.maximumHeight: naturalPopupHeight
 
         ColumnLayout {
@@ -1264,7 +1272,7 @@ PlasmoidItem {
                 QQC2.ScrollView {
                     Layout.fillWidth: true
                     Layout.preferredHeight: full.accountCardHeight
-                    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded
+                    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
                     QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff
 
                     Row {
@@ -1277,7 +1285,7 @@ PlasmoidItem {
                             delegate: Rectangle {
                                 readonly property bool selected: root.entryKey(modelData) === root.selectedEntryKey
                                 readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
-                                width: Kirigami.Units.gridUnit * 6.2
+                                width: full.accountCardWidth
                                 height: full.accountCardHeight
                                 radius: Kirigami.Units.cornerRadius
                                 color: selected ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.16) : Kirigami.Theme.backgroundColor

@@ -91,6 +91,10 @@ unset FAKE_NAN_MODE
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli" and .account == "nan@example.com" and .usage.updatedAt == "2026-09-21T16:11:42Z" and .usage.nan.monthToDate.totalTokens == 930278 and .usage.nan.last30d.totalTokens == 930278)' "$out"
 assert_json '.[] | select(.provider == "nan") | .usage.nan.monthToDate.byModel[0].model == "deepseek-v4-flash" and .usage.nan.monthToDate.byModel[0].inputTokens == 690429 and .usage.nan.monthToDate.byModel[0].outputTokens == 10442' "$out"
+# The aggregate contract pins the provider order end to end: the Codex accounts
+# first, then NaN, then OpenCode Go, then DeepSeek. Asserting the exact ordered
+# provider sequence (not just membership) fails if the order regresses.
+assert_json 'map(.provider) == ["codex", "codex", "nan", "opencodego", "deepseek"]' "$out"
 export FAKE_NAN_MODE=me-fail
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'length == 5 and any(.[]; .provider == "nan" and (.account == null) and .usage.nan.monthToDate.totalTokens == 930278)' "$out"

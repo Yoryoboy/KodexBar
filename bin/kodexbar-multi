@@ -276,9 +276,9 @@ if (( has_provider == 0 )); then
     }
 
     run_provider codex --provider codex --all-accounts
+    run_provider nan
     run_provider opencode --provider opencodego --source auto
     run_provider deepseek --provider deepseek --source api
-    run_provider nan
 
     if (( successes == 0 )); then
         printf 'kodexbar-multi: all provider usage queries failed; check codexbar credentials and KODEXBAR_CODEXBAR_COMMAND\n' >&2
