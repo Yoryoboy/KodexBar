@@ -35,6 +35,7 @@ Two presentation fixes requested by the user after the NaN provider landed:
 - [x] Re-run focused verification, deploy, and visually confirm the card contents are fully visible.
 
 ## Evidence
+- Work-unit commit: `e077f9b` (`fix: fit provider cards without scrollbar`).
 - Diff: 4 files, 17 insertions, 5 deletions (`README.md`, `bin/kodexbar-multi`, `contents/ui/main.qml`, `tests/test-wrapper.sh`). Written by a scoped `gentle-ai-worker` that did not commit.
 - Real-environment order, repo wrapper, `./bin/kodexbar-multi usage --format json --json-only`:
   1 codex 93jads@gmail.com, 2 codex 93jadsarg@gmail.com, 3 codex 93jadsusa@gmail.com, 4 **nan** 93jads@gmail.com, 5 opencodego, 6 deepseek. NaN is 4th as requested.
