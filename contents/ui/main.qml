@@ -990,6 +990,61 @@ PlasmoidItem {
         return summary
     }
 
+    function formatQuotaTimestamp(value) {
+        if (!value) {
+            return ""
+        }
+        var date = new Date(value)
+        if (isNaN(date.getTime())) {
+            return ""
+        }
+        return date.toLocaleString(Qt.locale(), Locale.ShortFormat)
+    }
+
+    function nanQuotaRows(quota) {
+        var rows = []
+        if (!quota || typeof quota !== "object") {
+            return rows
+        }
+        var models = quota.models instanceof Array ? quota.models : []
+        for (var i = 0; i < models.length; i++) {
+            var model = models[i]
+            if (!model || typeof model !== "object" || !model.model) {
+                continue
+            }
+            var used = typeof model.tokensUsed === "number" && isFinite(model.tokensUsed) ? model.tokensUsed : null
+            var cap = typeof model.cap === "number" && isFinite(model.cap) && model.cap > 0 ? model.cap : null
+            var remaining = typeof model.remaining === "number" && isFinite(model.remaining) ? model.remaining : null
+            var details = []
+            if (remaining !== null) {
+                details.push(i18n("%1 remaining", formatTokenCount(remaining)))
+            }
+            var periodEnd = formatQuotaTimestamp(model.periodEnd)
+            if (periodEnd.length > 0) {
+                details.push(i18n("Period ends %1", periodEnd))
+            }
+            if (typeof model.windowHours === "number" && isFinite(model.windowHours) && model.windowHours > 0) {
+                details.push(i18n("Rolling %1h window", model.windowHours))
+            }
+            if (typeof model.fullWindowTokens === "number" && isFinite(model.fullWindowTokens)) {
+                details.push(i18n("%1 tokens in window", formatTokenCount(model.fullWindowTokens)))
+            }
+            rows.push({
+                title: String(model.model),
+                percentLeft: cap !== null && remaining !== null
+                    ? Math.max(0, Math.min(100, remaining / cap * 100))
+                    : null,
+                resetsAt: null,
+                detail: details.join(" · "),
+                usageKnown: true,
+                value: used !== null && cap !== null
+                    ? i18n("%1 used of %2", formatTokenCount(used), formatTokenCount(cap))
+                    : ""
+            })
+        }
+        return rows
+    }
+
     function nanTokenRows(nan) {
         var rows = []
         if (!nan || typeof nan !== "object") {
@@ -1049,7 +1104,10 @@ PlasmoidItem {
         var rows = []
         var additionalRows = []
         var providerKey = String(entry.provider || "").toLowerCase()
-        var nanRows = providerKey === "nan" ? nanTokenRows(usage.nan) : []
+        var nanQuota = usage.nanQuota && typeof usage.nanQuota === "object" ? usage.nanQuota : null
+        var nanRows = providerKey === "nan"
+            ? (nanQuota ? nanQuotaRows(nanQuota) : nanTokenRows(usage.nan))
+            : []
         var windows = providerKey === "deepseek" || providerKey === "nan" ? []
             : (providerKey === "opencode" || providerKey === "opencodego")
             ? [{ title: windowTitle(primary, i18n("Primary")), data: primary }, { title: windowTitle(secondary, i18n("Weekly")), data: secondary }, { title: windowTitle(tertiary, i18n("Monthly")), data: tertiary }]

@@ -1,0 +1,22 @@
+{
+  "periodStart": "2026-09-01T00:00:00Z",
+  "models": [
+    {
+      "model": "deepseek-v4-flash",
+      "tokensUsed": 125000,
+      "cap": 500000,
+      "remaining": 375000,
+      "periodEnd": "2026-10-01T00:00:00Z",
+      "updatedAt": "2026-09-21T16:11:42Z",
+      "fullWindowTokens": 900000,
+      "windowHours": 24
+    },
+    {
+      "model": "nan-large",
+      "tokensUsed": 40000,
+      "cap": 100000,
+      "remaining": 60000,
+      "periodEnd": "2026-10-01T00:00:00Z"
+    }
+  ]
+}

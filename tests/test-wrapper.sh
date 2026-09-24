@@ -65,6 +65,9 @@ chmod 755 "$fake_nan"
 # Disable NaN for every case that does not exercise it, so the suite is deterministic
 # even when the host has a real `nan` CLI installed.
 export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
+# Disable the local cloud quota helper unless a case exercises it, so the suite never
+# reads the host's real Chrome profile, cookies, or KWallet.
+export KODEXBAR_NAN_QUOTA_COMMAND=$tmpdir/no-quota-helper
 
 codex_home_a=$tmpdir/codex-home-a
 codex_home_b=$tmpdir/codex-home-b
@@ -120,6 +123,95 @@ assert grep -q '^2$' "$nan_counter"
 unset FAKE_NAN_MODE
 export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
 
+# --- NaN cloud quota helper -----------------------------------------------------------------
+# The helper is always mocked: no test reads a live Chrome cookie, KWallet entry, or network.
+fake_quota=$tmpdir/nan-cloud-quota
+cat >"$fake_quota" <<'FAKEQUOTA'
+#!/usr/bin/env bash
+case ${FAKE_QUOTA_MODE:-ok} in
+    fail) printf 'sanitized helper failure\n' >&2; exit 1 ;;
+    invalid) printf 'not json\n'; exit 0 ;;
+    malformed-model) printf '{"periodStart":"2026-09-01T00:00:00Z","models":[{"model":"","tokensUsed":1,"cap":2,"remaining":1,"periodEnd":"2026-10-01T00:00:00Z"}]}\n'; exit 0 ;;
+    malformed-model-fields) printf '{"periodStart":"2026-09-01T00:00:00Z","models":[{"model":"nan-large","tokensUsed":1,"cap":"2","remaining":-1}]}\n'; exit 0 ;;
+    malformed-optional) printf '{"periodStart":"2026-09-01T00:00:00Z","models":[{"model":"nan-large","tokensUsed":1,"cap":2,"remaining":1,"periodEnd":"2026-10-01T00:00:00Z","windowHours":-3}]}\n'; exit 0 ;;
+    empty-models) printf '{"periodStart":"2026-09-01T00:00:00Z","models":[]}\n'; exit 0 ;;
+    secret-stderr) printf 'cookie=SECRET_SESSION_MARKER wallet=SECRET_WALLET_MARKER\n' >&2 ;;
+esac
+cat "$FAKE_FIXTURES/nan-quota.json"
+FAKEQUOTA
+chmod 755 "$fake_quota"
+
+# The helper wins over the CLI when it succeeds, even though the nan CLI is available.
+unset FAKE_QUOTA_MODE
+export KODEXBAR_NAN_COMMAND=$fake_nan
+export KODEXBAR_NAN_QUOTA_COMMAND=$fake_quota
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and (map(.provider) == ["codex", "codex", "nan", "opencodego", "deepseek"])' "$out"
+assert_json '.[] | select(.provider == "nan") | .source == "cloud" and .account == "nan@example.com" and (.usage.nan == null) and .usage.updatedAt == "2026-09-21T16:11:42Z" and .usage.nanQuota.models[0].model == "deepseek-v4-flash" and .usage.nanQuota.models[0].tokensUsed == 125000 and .usage.nanQuota.models[0].cap == 500000 and .usage.nanQuota.models[0].remaining == 375000 and .usage.nanQuota.models[0].windowHours == 24 and .usage.nanQuota.models[0].periodEnd == "2026-10-01T00:00:00Z"' "$out"
+
+# Cloud quota still appears when no nan CLI exists: the helper owns the Chrome session read.
+export KODEXBAR_NAN_COMMAND=$tmpdir/missing-nan
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cloud" and (.account == null))' "$out"
+export KODEXBAR_NAN_COMMAND=$fake_nan
+
+# Any helper failure preserves the CLI metrics fallback.
+export FAKE_QUOTA_MODE=fail
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli" and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
+export FAKE_QUOTA_MODE=invalid
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+# A structurally valid envelope with a malformed model must not win the cloud
+# branch and leave blank popup rows: each case falls back to CLI metrics.
+export FAKE_QUOTA_MODE=malformed-model
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli") and all(.[]; (.provider != "nan") or (.usage.nanQuota == null))' "$out"
+export FAKE_QUOTA_MODE=malformed-model-fields
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+export FAKE_QUOTA_MODE=malformed-optional
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+export FAKE_QUOTA_MODE=empty-models
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+unset FAKE_QUOTA_MODE
+
+# A missing helper target also falls back to the CLI.
+export KODEXBAR_NAN_QUOTA_COMMAND=$tmpdir/missing-quota-helper
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+
+# Resolution without an override: the copy installed next to the wrapper wins.
+sibling_dir=$tmpdir/sibling/bin
+mkdir -p "$sibling_dir"
+cp "$wrapper" "$sibling_dir/kodexbar-multi"
+cp "$fake_quota" "$sibling_dir/nan-cloud-quota"
+out=$(env -u KODEXBAR_NAN_QUOTA_COMMAND KODEXBAR_NAN_COMMAND="$fake_nan" "$sibling_dir/kodexbar-multi" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cloud")' "$out"
+
+# With no sibling, the ${XDG_BIN_HOME:-~/.local/bin} install path is used.
+installed_dir=$tmpdir/installed/bin
+installed_home=$tmpdir/installed-home
+mkdir -p "$installed_dir" "$installed_home"
+cp "$wrapper" "$installed_dir/kodexbar-multi"
+cp "$fake_quota" "$installed_home/nan-cloud-quota"
+out=$(env -u KODEXBAR_NAN_QUOTA_COMMAND XDG_BIN_HOME="$installed_home" HOME="$tmpdir/empty-home" KODEXBAR_NAN_COMMAND="$fake_nan" "$installed_dir/kodexbar-multi" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cloud")' "$out"
+export KODEXBAR_NAN_QUOTA_COMMAND=$tmpdir/no-quota-helper
+
+# Helper diagnostics must never reach the aggregate or the wrapper's stderr.
+export KODEXBAR_NAN_QUOTA_COMMAND=$fake_quota
+export FAKE_QUOTA_MODE=secret-stderr
+out=$("$wrapper" usage --format json --json-only 2>"$tmpdir/quota-helper.err")
+assert_json 'any(.[]; .provider == "nan" and .source == "cloud")' "$out"
+if grep -q 'SECRET_SESSION_MARKER\|SECRET_WALLET_MARKER' <<<"$out"; then fail 'helper diagnostics leaked into aggregate output'; fi
+if grep -q 'SECRET_SESSION_MARKER\|SECRET_WALLET_MARKER' "$tmpdir/quota-helper.err"; then fail 'helper diagnostics leaked into wrapper stderr'; fi
+unset FAKE_QUOTA_MODE
+export KODEXBAR_NAN_QUOTA_COMMAND=$tmpdir/no-quota-helper
+export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
+
 export FAKE_MODE=multiple-opencode
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'length == 5 and all(.[]; (.provider != "opencodego" or .activity == null))' "$out"
@@ -171,6 +263,15 @@ unset KODEXBAR_CODEX_ACCOUNT_HOMES XDG_DATA_HOME
 assert grep -q 'function codexAccountKey' "$root/contents/ui/main.qml"
 assert grep -q 'keys.sort()' "$root/contents/ui/main.qml"
 assert grep -q 'entry.creditsRemaining > 0' "$root/contents/ui/main.qml"
+
+# NaN cloud quota rendering: the popup must prefer the helper's per-model quota
+# payload, keep the CLI token fallback, and label the period explicitly instead
+# of reusing a reset countdown that would misrepresent the quota window.
+assert grep -q 'usage.nanQuota' "$root/contents/ui/main.qml"
+assert grep -q 'function nanQuotaRows' "$root/contents/ui/main.qml"
+assert grep -q 'nanQuotaRows(nanQuota)' "$root/contents/ui/main.qml"
+assert grep -q 'Period ends %1' "$root/contents/ui/main.qml"
+assert grep -q '%1 used of %2' "$root/contents/ui/main.qml"
 
 # candidateList() must recognize both aggregate wrapper basenames -- the legacy
 # `codexbar-multi` and the bundled `kodexbar-multi` -- as a single aggregate
@@ -265,10 +366,32 @@ if [[ ${1-} == -t && ${3-} == -l ]]; then exit 0; fi
 exit 0
 FAKEPKG
 chmod 755 "$fake_package_tool"
+
+# Install must not overwrite a pre-existing non-identical helper: it preserves the
+# user-owned file and warns, while still installing the wrapper.
+install_taken=$tmpdir/install-taken
+mkdir -p "$install_taken"
+printf 'user-owned helper\n' >"$install_taken/nan-cloud-quota"
+printf 'user-owned helper\n' >"$tmpdir/expected-helper"
+PATH="$tmpdir:$PATH" XDG_BIN_HOME="$install_taken" "$root/install.sh" >"$tmpdir/install-taken.out" 2>"$tmpdir/install-taken.err"
+assert cmp -s "$tmpdir/expected-helper" "$install_taken/nan-cloud-quota"
+assert grep -q 'preserving unrecognized quota helper' "$tmpdir/install-taken.err"
+assert cmp -s "$root/bin/kodexbar-multi" "$install_taken/kodexbar-multi"
+
+# An absent helper target is installed as a byte-for-byte copy of the repository file.
+install_fresh=$tmpdir/install-fresh
+PATH="$tmpdir:$PATH" XDG_BIN_HOME="$install_fresh" "$root/install.sh" >"$tmpdir/install-fresh.out" 2>"$tmpdir/install-fresh.err"
+assert cmp -s "$root/bin/nan-cloud-quota" "$install_fresh/nan-cloud-quota"
+assert test -x "$install_fresh/nan-cloud-quota"
+
 protected_dir=$tmpdir/bin
 mkdir -p "$protected_dir"
 printf 'user-owned command\n' >"$protected_dir/kodexbar-multi"
-PATH="$tmpdir:$PATH" XDG_BIN_HOME="$protected_dir" "$root/install.sh" --uninstall >/dev/null
+printf 'user-owned helper\n' >"$protected_dir/nan-cloud-quota"
+PATH="$tmpdir:$PATH" XDG_BIN_HOME="$protected_dir" "$root/install.sh" --uninstall >"$tmpdir/uninstall.out" 2>"$tmpdir/uninstall.err"
 assert test -f "$protected_dir/kodexbar-multi"
+assert test -f "$protected_dir/nan-cloud-quota"
+assert grep -q 'preserving unrecognized wrapper' "$tmpdir/uninstall.err"
+assert grep -q 'preserving unrecognized quota helper' "$tmpdir/uninstall.err"
 
 printf 'test-wrapper.sh: all tests passed\n'

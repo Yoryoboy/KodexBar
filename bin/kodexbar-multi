@@ -167,10 +167,98 @@ nan_command() {
     printf '%s\n' "$candidate"
 }
 
+# nan_account prints the NaN account email when the optional CLI reports one. It
+# never fails: a missing CLI or malformed identity simply yields no account, so
+# the cloud quota path stays independent of the `nan` CLI.
+nan_account() {
+    local command identity
+    command=$(nan_command) || return 0
+    identity=$("$command" me 2>/dev/null || true)
+    if [[ -n $identity ]] && jq -e . >/dev/null 2>&1 <<<"$identity"; then
+        jq -r '.email // empty' <<<"$identity" 2>/dev/null || true
+    fi
+}
+
+# nan_quota_command resolves the bundled local quota helper. The override selects
+# an executable, never a network target; any executable named here runs with
+# access to the Chrome session, so override it only with a trusted helper. The
+# bundled helper's own HTTPS target is fixed, so the override cannot change that
+# endpoint -- it only substitutes a different (trusted) program.
+nan_quota_command() {
+    local configured candidate
+    configured=${KODEXBAR_NAN_QUOTA_COMMAND-}
+    if [[ -n $configured ]]; then
+        if [[ $configured == */* ]]; then
+            candidate=$configured
+        else
+            candidate=$(command -v -- "$configured" 2>/dev/null || true)
+        fi
+    else
+        # Prefer the copy installed next to this wrapper, then PATH, then the
+        # default install directory. A missing or non-executable candidate is a
+        # silent skip, not an error.
+        candidate=$(dirname "$self_path")/nan-cloud-quota
+        if [[ ! -x $candidate ]]; then
+            candidate=$(command -v nan-cloud-quota 2>/dev/null || true)
+        fi
+        [[ -n $candidate ]] || candidate=${XDG_BIN_HOME:-$HOME/.local/bin}/nan-cloud-quota
+    fi
+
+    if [[ -z ${candidate:-} || ! -x $candidate ]]; then
+        return 1
+    fi
+    printf '%s\n' "$candidate"
+}
+
+# nan_quota_entry prefers the local cloud quota helper, which reads the existing
+# Chrome session, over the `nan` CLI metrics. The helper's stderr is discarded so
+# a failed helper can never leak wallet or cookie diagnostics into the aggregate
+# or the wrapper's own stderr. Any missing helper, non-zero exit, malformed, or
+# off-shape payload returns non-zero so the caller can fall back to CLI metrics.
+nan_quota_entry() {
+    local output=$1 helper quota account updated_at
+    helper=$(nan_quota_command) || return 1
+    quota=$("$helper" 2>/dev/null) || return 1
+    [[ -n $quota ]] || return 1
+    # Validate every required field, not just the top level: a helper that emits a
+    # structurally valid envelope with a malformed model must not win the cloud
+    # branch and leave blank popup rows, so it falls back to the CLI instead. An
+    # empty models list is rejected for the same reason.
+    jq -e '
+        def uint: type == "number" and . >= 0 and (. == floor);
+        def nan_model:
+            type == "object"
+            and (.model | type == "string" and length > 0)
+            and (.periodEnd | type == "string")
+            and (.tokensUsed | uint)
+            and (.cap | uint)
+            and (.remaining | uint)
+            and (if has("updatedAt") then (.updatedAt | type == "string") else true end)
+            and (if has("fullWindowTokens") then (.fullWindowTokens | uint) else true end)
+            and (if has("windowHours") then (.windowHours | uint) else true end);
+        type == "object"
+        and (.periodStart | type == "string")
+        and (.models | type == "array" and length > 0)
+        and ([.models[] | nan_model] | all)
+    ' >/dev/null 2>&1 <<<"$quota" || return 1
+
+    account=$(nan_account)
+    # Surface a per-model timestamp only when the helper actually reported one;
+    # never invent a time for quota that carries no timestamp.
+    updated_at=$(jq -r '[.models[]? | .updatedAt? // empty] | max // empty' <<<"$quota" 2>/dev/null || true)
+
+    jq -n --argjson quota "$quota" --arg account "$account" --arg updatedAt "$updated_at" '
+        {provider: "nan", source: "cloud"}
+        + (if $account != "" then {account: $account} else {} end)
+        + {usage: ({nanQuota: $quota} + (if $updatedAt != "" then {updatedAt: $updatedAt} else {} end))}
+    ' >"$output"
+}
+
 # nan_usage_entry transforms `nan metrics usage` into a CodexBar-shaped entry so the
-# popup can render it. NaN is optional: any failure keeps the aggregate intact.
+# popup can render it. It is the fallback when the cloud quota helper is missing
+# or fails. NaN is optional: any failure keeps the aggregate intact.
 nan_usage_entry() {
-    local output=$1 command metrics identity account updated_at attempt
+    local output=$1 command metrics account updated_at attempt
     command=$(nan_command) || return 1
     # `nan metrics usage` fails transiently in streaks; one retry with a short backoff
     # recovers the common case. Invalid JSON is not retried and is handled below.
@@ -183,12 +271,7 @@ nan_usage_entry() {
     [[ -n $metrics ]] || return 1
     jq -e . >/dev/null 2>&1 <<<"$metrics" || return 1
 
-    account=""
-    identity=$("$command" me 2>/dev/null || true)
-    if [[ -n $identity ]] && jq -e . >/dev/null 2>&1 <<<"$identity"; then
-        account=$(jq -r '.email // empty' <<<"$identity" 2>/dev/null || true)
-    fi
-
+    account=$(nan_account)
     updated_at=$(jq -r '.monthToDate.cachedAt // .allTime.cachedAt // empty' <<<"$metrics" 2>/dev/null || true)
 
     jq -n --argjson metrics "$metrics" --arg account "$account" --arg updatedAt "$updated_at" '
@@ -246,8 +329,10 @@ if (( has_provider == 0 )); then
         local name=$1 output=$tmpdir/$1.json
         shift
         if [[ $name == nan ]]; then
-            # NaN is not a codexbar provider: query its own CLI and transform the payload.
-            if nan_usage_entry "$output"; then
+            # NaN is not a codexbar provider: prefer the local cloud quota helper
+            # (Chrome session) and fall back to its own CLI metrics only when the
+            # helper is missing or fails.
+            if nan_quota_entry "$output" || nan_usage_entry "$output"; then
                 outputs+=("$output")
                 successes=$((successes + 1))
             fi
