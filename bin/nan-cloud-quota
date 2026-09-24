@@ -1,0 +1,396 @@
+#!/usr/bin/env python3
+"""Read the local Chrome `nan_session` cookie and print validated NaN cloud quota JSON.
+
+The helper is deliberately narrow:
+
+* it reads one exact record (``nan_session`` for ``.nan.builders``) from the
+  Linux Google Chrome ``Default`` cookie database in read-only mode,
+* it unwraps the ``Chrome Safe Storage`` password from KDE KWallet to decrypt
+  the ``v11`` AES-128-CBC cookie value (SHA256 host-key prefix verified),
+* it performs one fixed HTTPS GET against the NaN cloud quota endpoint,
+* and it prints only the validated quota JSON document on stdout.
+
+Secrets (the wallet password and the decrypted cookie) are kept in process
+memory only. They are never written to argv, the environment, disk, or any log
+line; every failure path emits a fixed, secret-free message or stays silent.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import http.client
+import json
+import os
+import shutil
+import sqlite3
+import ssl
+import subprocess
+import sys
+import time
+import urllib.parse
+
+try:
+    from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+except ImportError:  # pragma: no cover - deterministic failure without the dependency
+    sys.stderr.write("nan-cloud-quota: cryptography dependency unavailable\n")
+    raise SystemExit(3)
+
+# --- Fixed, non-configurable target identity ---------------------------------
+
+FIXED_HOST = "cloud-api.nan.builders"
+QUOTA_PATH = "/api/usage/quota"
+DASHBOARD_ORIGIN = "https://cloud.nan.builders"
+DASHBOARD_REFERER = "https://cloud.nan.builders/dashboard"
+USER_AGENT = (
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+ACCEPT = "application/json"
+
+COOKIE_NAME = "nan_session"
+COOKIE_HOST_KEY = ".nan.builders"
+
+WALLET_NAME = "kdewallet"
+WALLET_FOLDER = "Chrome Keys"
+WALLET_ENTRY = "Chrome Safe Storage"
+
+CHROME_PROFILE_DIR = "google-chrome/Default"
+CHROME_COOKIE_FILENAME = "Cookies"
+
+# --- Fixed limits ------------------------------------------------------------
+
+REQUEST_TIMEOUT_SECONDS = 15
+WALLET_TIMEOUT_SECONDS = 15
+MAX_RESPONSE_BYTES = 1 << 20  # 1 MiB
+
+AES_KEY_LENGTH_BYTES = 16
+AES_BLOCK_SIZE_BYTES = 16
+PBKDF2_SALT = b"saltysalt"
+PBKDF2_ITERATIONS = 1
+CBC_IV = b" " * AES_BLOCK_SIZE_BYTES
+DOMAIN_HASH_LENGTH = 32
+EXPECTED_CRYPTO_VERSION = b"v11"
+
+# Chrome stores expiry as microseconds since 1601-01-01 UTC.
+CHROME_EPOCH_OFFSET_SECONDS = 11644473600
+
+# --- Sanitized, fixed failure messages ---------------------------------------
+
+MSG_PASSWORD_UNAVAILABLE = "Chrome Safe Storage password unavailable"
+MSG_COOKIE_UNAVAILABLE = "nan_session cookie unavailable"
+MSG_COOKIE_INSECURE = "nan_session cookie is not Secure HttpOnly"
+MSG_COOKIE_EXPIRED = "nan_session cookie expired"
+MSG_COOKIE_UNDECRYPTABLE = "nan_session cookie could not be decrypted"
+MSG_REQUEST_FAILED = "quota request failed"
+MSG_REDIRECTED = "quota request was unexpectedly redirected"
+MSG_RESPONSE_INVALID = "quota response was not valid JSON"
+MSG_UNEXPECTED_ARGUMENTS = "unexpected arguments"
+
+# Only ever raised with one of the fixed messages above; no caller-provided
+# value (password, cookie, host, redirect target, raw exception) is interpolated.
+class QuotaError(Exception):
+    """A failure whose message is always a fixed, secret-free string."""
+
+
+def chrome_cookie_db_path() -> str:
+    """Return the fixed Linux Google Chrome Default cookie database path."""
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    return os.path.join(config_home, CHROME_PROFILE_DIR, CHROME_COOKIE_FILENAME)
+
+
+def read_safe_storage_password() -> str:
+    """Unwrap the Chrome Safe Storage password from KDE KWallet.
+
+    The password travels only through the child process pipe; it never touches
+    argv, the environment, or disk. ``kwallet-query`` appends a single trailing
+    newline that is stripped so the raw password is unchanged.
+    """
+    binary = shutil.which("kwallet-query")
+    if not binary:
+        raise QuotaError(MSG_PASSWORD_UNAVAILABLE)
+    try:
+        completed = subprocess.run(
+            [binary, "-f", WALLET_FOLDER, "-r", WALLET_ENTRY, WALLET_NAME],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            timeout=WALLET_TIMEOUT_SECONDS,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        raise QuotaError(MSG_PASSWORD_UNAVAILABLE)
+    if completed.returncode != 0:
+        raise QuotaError(MSG_PASSWORD_UNAVAILABLE)
+    password = completed.stdout or b""
+    if password.endswith(b"\n"):
+        password = password[:-1]
+    if not password:
+        raise QuotaError(MSG_PASSWORD_UNAVAILABLE)
+    try:
+        return password.decode("utf-8")
+    except UnicodeDecodeError:
+        raise QuotaError(MSG_PASSWORD_UNAVAILABLE)
+
+
+def derive_key(password: str) -> bytes:
+    """Derive the AES-128 key used by Linux Chrome cookie encryption."""
+    return hashlib.pbkdf2_hmac(
+        "sha1",
+        password.encode("utf-8"),
+        PBKDF2_SALT,
+        PBKDF2_ITERATIONS,
+        AES_KEY_LENGTH_BYTES,
+    )
+
+
+def _strip_pkcs7(data: bytes) -> bytes:
+    if not data:
+        raise ValueError("empty ciphertext")
+    pad = data[-1]
+    if pad < 1 or pad > AES_BLOCK_SIZE_BYTES or pad > len(data):
+        raise ValueError("invalid padding length")
+    if data[-pad:] != bytes([pad]) * pad:
+        raise ValueError("invalid padding bytes")
+    return data[:-pad]
+
+
+def decrypt_cookie_value(encrypted_value: bytes, host_key: str, password: str) -> str:
+    """Decrypt one Linux Chrome ``v11`` cookie value.
+
+    Only the observed ``v11`` layout is accepted: a leading SHA256(host_key)
+    prefix is mandatory and verified before the remainder is returned. Older
+    ``v10`` values, unknown versions, and values without the prefix fail closed.
+    """
+    if len(encrypted_value) < 3 or encrypted_value[:3] != EXPECTED_CRYPTO_VERSION:
+        raise QuotaError(MSG_COOKIE_UNDECRYPTABLE)
+    payload = encrypted_value[3:]
+    if not payload or len(payload) % AES_BLOCK_SIZE_BYTES != 0:
+        raise QuotaError(MSG_COOKIE_UNDECRYPTABLE)
+
+    key = derive_key(password)
+    try:
+        decryptor = Cipher(algorithms.AES(key), modes.CBC(CBC_IV)).decryptor()
+        padded = decryptor.update(payload) + decryptor.finalize()
+        plaintext = _strip_pkcs7(padded)
+    except Exception:
+        raise QuotaError(MSG_COOKIE_UNDECRYPTABLE)
+
+    expected_prefix = hashlib.sha256(host_key.encode("utf-8")).digest()
+    if (
+        len(plaintext) < DOMAIN_HASH_LENGTH
+        or plaintext[:DOMAIN_HASH_LENGTH] != expected_prefix
+    ):
+        raise QuotaError(MSG_COOKIE_UNDECRYPTABLE)
+    plaintext = plaintext[DOMAIN_HASH_LENGTH:]
+
+    try:
+        return plaintext.decode("utf-8")
+    except UnicodeDecodeError:
+        raise QuotaError(MSG_COOKIE_UNDECRYPTABLE)
+
+
+def _open_cookie_db(db_path: str) -> sqlite3.Connection:
+    """Open the Chrome cookie database strictly read-only."""
+    absolute = os.path.abspath(db_path)
+    uri = "file:{}?mode=ro".format(urllib.parse.quote(absolute))
+    try:
+        return sqlite3.connect(uri, uri=True, timeout=5)
+    except sqlite3.Error:
+        raise QuotaError(MSG_COOKIE_UNAVAILABLE)
+
+
+def _is_expired(expires_utc: object, now: float | None = None) -> bool:
+    """Return True when a Chrome expiry (microseconds since 1601 UTC) is past.
+
+    ``0`` means a session cookie with no stored expiry, which is never stale.
+    """
+    if not expires_utc:
+        return False
+    try:
+        micros = int(expires_utc)
+    except (TypeError, ValueError):
+        return True
+    if micros <= 0:
+        return False
+    unix_seconds = (micros / 1_000_000.0) - CHROME_EPOCH_OFFSET_SECONDS
+    return unix_seconds <= (time.time() if now is None else now)
+
+
+def read_nan_session_cookie(password: str, db_path: str | None = None) -> str:
+    """Read and return the exact ``.nan.builders`` ``nan_session`` value."""
+    path = db_path or chrome_cookie_db_path()
+    if not os.path.isfile(path):
+        raise QuotaError(MSG_COOKIE_UNAVAILABLE)
+
+    connection = _open_cookie_db(path)
+    try:
+        connection.row_factory = sqlite3.Row
+        row = connection.execute(
+            "SELECT host_key, encrypted_value, expires_utc, is_secure, is_httponly "
+            "FROM cookies WHERE host_key = ? AND name = ? "
+            "ORDER BY last_access_utc DESC LIMIT 1",
+            (COOKIE_HOST_KEY, COOKIE_NAME),
+        ).fetchone()
+    except sqlite3.Error:
+        raise QuotaError(MSG_COOKIE_UNAVAILABLE)
+    finally:
+        connection.close()
+
+    if row is None:
+        raise QuotaError(MSG_COOKIE_UNAVAILABLE)
+    if not row["is_secure"] or not row["is_httponly"]:
+        raise QuotaError(MSG_COOKIE_INSECURE)
+    if _is_expired(row["expires_utc"]):
+        raise QuotaError(MSG_COOKIE_EXPIRED)
+
+    encrypted_value = row["encrypted_value"]
+    if not encrypted_value:
+        raise QuotaError(MSG_COOKIE_UNDECRYPTABLE)
+    return decrypt_cookie_value(bytes(encrypted_value), row["host_key"], password)
+
+
+def _new_connection() -> http.client.HTTPSConnection:
+    """Create the fixed-host HTTPS connection with verified TLS and a timeout."""
+    return http.client.HTTPSConnection(
+        FIXED_HOST,
+        port=443,
+        timeout=REQUEST_TIMEOUT_SECONDS,
+        context=ssl.create_default_context(),
+    )
+
+
+def fetch_quota(cookie_value: str) -> bytes:
+    """Perform the single fixed-host quota GET and return the raw body.
+
+    Redirects are never followed; any 3xx is rejected as unexpected.
+    """
+    headers = {
+        "Accept": ACCEPT,
+        "Cookie": "{}={}".format(COOKIE_NAME, cookie_value),
+        "Origin": DASHBOARD_ORIGIN,
+        "Referer": DASHBOARD_REFERER,
+        "User-Agent": USER_AGENT,
+    }
+    connection = None
+    try:
+        connection = _new_connection()
+        connection.request("GET", QUOTA_PATH, headers=headers)
+        response = connection.getresponse()
+        status = response.status
+        if 300 <= status < 400:
+            raise QuotaError(MSG_REDIRECTED)
+        if status != 200:
+            raise QuotaError(MSG_REQUEST_FAILED)
+        body = response.read(MAX_RESPONSE_BYTES + 1)
+    except QuotaError:
+        raise
+    except Exception:
+        raise QuotaError(MSG_REQUEST_FAILED)
+    finally:
+        if connection is not None:
+            try:
+                connection.close()
+            except Exception:
+                pass
+
+    if len(body) > MAX_RESPONSE_BYTES:
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    return body
+
+
+def _is_nonnegative_integer(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0
+
+
+def _reject_json_constant(_token: str) -> None:
+    """Reject the non-standard ``NaN``/``Infinity`` JSON constants."""
+    raise ValueError("non-finite JSON constant")
+
+
+def _sanitized_model_entry(entry: object) -> dict:
+    if not isinstance(entry, dict):
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    if not isinstance(entry.get("model"), str):
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    if not isinstance(entry.get("periodEnd"), str):
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    for field in ("tokensUsed", "cap", "remaining"):
+        if not _is_nonnegative_integer(entry.get(field)):
+            raise QuotaError(MSG_RESPONSE_INVALID)
+    sanitized = {
+        "model": entry["model"],
+        "tokensUsed": entry["tokensUsed"],
+        "cap": entry["cap"],
+        "remaining": entry["remaining"],
+        "periodEnd": entry["periodEnd"],
+    }
+    if "updatedAt" in entry:
+        if not isinstance(entry["updatedAt"], str):
+            raise QuotaError(MSG_RESPONSE_INVALID)
+        sanitized["updatedAt"] = entry["updatedAt"]
+    for field in ("fullWindowTokens", "windowHours"):
+        if field in entry:
+            if not _is_nonnegative_integer(entry[field]):
+                raise QuotaError(MSG_RESPONSE_INVALID)
+            sanitized[field] = entry[field]
+    return sanitized
+
+
+def parse_quota_response(raw: bytes) -> dict:
+    """Validate and normalize the quota body into a fixed output shape.
+
+    The top level is exactly ``periodStart`` (string) and ``models`` (array).
+    Each model carries ``model``/``periodEnd`` strings and finite, non-negative
+    integer ``tokensUsed``/``cap``/``remaining``. Only allowed fields are
+    returned, so unknown or sensitive-looking server fields are stripped, and
+    non-finite JSON constants (``NaN``/``Infinity``) fail. Optional per-model
+    ``updatedAt`` (string), ``fullWindowTokens`` and ``windowHours``
+    (non-negative integers) are preserved when present.
+    """
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    try:
+        payload = json.loads(text, parse_constant=_reject_json_constant)
+    except (ValueError, RecursionError):
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    if not isinstance(payload, dict) or not payload:
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    if not isinstance(payload.get("periodStart"), str):
+        raise QuotaError(MSG_RESPONSE_INVALID)
+    models = payload.get("models")
+    if not isinstance(models, list):
+        raise QuotaError(MSG_RESPONSE_INVALID)
+
+    return {
+        "periodStart": payload["periodStart"],
+        "models": [_sanitized_model_entry(entry) for entry in models],
+    }
+
+
+def main(argv: list[str] | None = None) -> int:
+    arguments = list(sys.argv[1:] if argv is None else argv)
+    if arguments:
+        sys.stderr.write("nan-cloud-quota: {}\n".format(MSG_UNEXPECTED_ARGUMENTS))
+        return 2
+
+    try:
+        password = read_safe_storage_password()
+        cookie_value = read_nan_session_cookie(password, chrome_cookie_db_path())
+        raw = fetch_quota(cookie_value)
+        payload = parse_quota_response(raw)
+    except QuotaError as error:
+        sys.stderr.write("nan-cloud-quota: {}\n".format(error))
+        return 1
+    except Exception:
+        sys.stderr.write("nan-cloud-quota: unexpected failure\n")
+        return 1
+
+    sys.stdout.write(json.dumps(payload, separators=(",", ":"), ensure_ascii=True) + "\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
