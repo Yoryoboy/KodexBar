@@ -339,6 +339,12 @@ assert grep -q 'function codexAccountKey' "$root/contents/ui/main.qml"
 assert grep -q 'keys.sort()' "$root/contents/ui/main.qml"
 assert grep -q 'entry.creditsRemaining > 0' "$root/contents/ui/main.qml"
 
+# Aggregate card display: the popup hides DeepSeek, keeps Claude before the
+# remaining providers, and scrolls a wide card row instead of clipping it.
+assert grep -q 'function visibleEntries' "$root/contents/ui/main.qml"
+assert grep -q 'model: root.visibleEntries()' "$root/contents/ui/main.qml"
+assert grep -q 'QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded' "$root/contents/ui/main.qml"
+
 # NaN cloud quota rendering: the popup must prefer the helper's per-model quota
 # payload, keep the CLI token fallback, and label the period explicitly instead
 # of reusing a reset countdown that would misrepresent the quota window.
@@ -360,6 +366,25 @@ candidate_source=$(awk '
     capture && /^    \}$/ { exit }
 ' "$root/contents/ui/main.qml")
 [[ -n $candidate_source ]] || fail 'candidateList() was not found in contents/ui/main.qml'
+
+# The aggregate card row is a display-only projection of the wrapper payload: it
+# hides DeepSeek, places Claude after the Codex account cards and before the
+# remaining providers, and keeps selection on a visible card. These functions are
+# extracted from main.qml and exercised through qmltestrunner when available;
+# otherwise the suite degrades to structural checks (reduced coverage reported).
+extract_function() {
+    awk -v name="$1" '
+        $0 ~ "^    function " name "\\(" { capture = 1 }
+        capture { print }
+        capture && /^    \}$/ { exit }
+    ' "$root/contents/ui/main.qml"
+}
+display_functions=""
+for name in isAggregateView visibleEntries entryKey selectedEntry keepSelectionValid cardsRowWidth cardsRowOverflows; do
+    fn_source=$(extract_function "$name")
+    [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
+    display_functions+=$fn_source$'\n'
+done
 
 qml_test_runner=/usr/lib/qt6/bin/qmltestrunner
 [[ -x $qml_test_runner ]] || qml_test_runner=$(command -v qmltestrunner || true)
@@ -414,10 +439,112 @@ $candidate_source
 QML
     QT_QPA_PLATFORM=offscreen "$qml_test_runner" -input "$tmpdir/tst_candidates.qml" >"$tmpdir/qmltest.out" 2>&1 \
         || fail "candidateList regression failed: $(cat "$tmpdir/qmltest.out")"
+
+    cat >"$tmpdir/tst_display_order.qml" <<QML
+import QtQuick
+import QtTest
+
+Item {
+    property var entries: []
+    property string selectedProvider: "detect"
+    property string selectedSource: "detect"
+    property string selectedEntryKey: ""
+
+$display_functions
+    TestCase {
+        name: "aggregateCardDisplay"
+
+        function init() {
+            entries = []
+            selectedProvider = "detect"
+            selectedSource = "detect"
+            selectedEntryKey = ""
+        }
+
+        function entry(provider, account) {
+            return { provider: provider, account: account || "", source: "cli" }
+        }
+
+        function test_aggregate_hides_deepseek_and_places_claude_fourth() {
+            entries = [entry("codex", "a"), entry("codex", "b"), entry("codex", "c"),
+                entry("nan"), entry("opencodego"), entry("deepseek"), entry("claude")]
+            var cards = visibleEntries()
+            compare(cards.length, 6)
+            compare(cards[0].provider, "codex")
+            compare(cards[1].provider, "codex")
+            compare(cards[2].provider, "codex")
+            compare(cards[3].provider, "claude")
+            compare(cards[4].provider, "nan")
+            compare(cards[5].provider, "opencodego")
+        }
+
+        function test_single_codex_keeps_claude_before_remaining_providers() {
+            entries = [entry("codex", "a"), entry("nan"), entry("opencodego"),
+                entry("deepseek"), entry("claude")]
+            var cards = visibleEntries()
+            compare(cards.length, 4)
+            compare(cards[0].provider, "codex")
+            compare(cards[1].provider, "claude")
+            compare(cards[2].provider, "nan")
+            compare(cards[3].provider, "opencodego")
+        }
+
+        function test_explicit_deepseek_view_is_unfiltered() {
+            entries = [entry("deepseek")]
+            selectedProvider = "deepseek"
+            selectedSource = "api"
+            var cards = visibleEntries()
+            compare(cards.length, 1)
+            compare(cards[0].provider, "deepseek")
+            compare(selectedEntry().provider, "deepseek")
+        }
+
+        function test_only_deepseek_present_remains_visible() {
+            entries = [entry("deepseek")]
+            var cards = visibleEntries()
+            compare(cards.length, 1)
+            compare(cards[0].provider, "deepseek")
+        }
+
+        function test_selection_moves_off_hidden_deepseek_on_refresh() {
+            entries = [entry("deepseek"), entry("codex", "a"), entry("claude")]
+            selectedEntryKey = entryKey(entries[0])
+            keepSelectionValid()
+            compare(selectedEntryKey, entryKey(entries[1]))
+            compare(selectedEntry().provider, "codex")
+        }
+
+        function test_selected_entry_falls_back_to_first_visible() {
+            entries = [entry("deepseek"), entry("codex", "a"), entry("claude")]
+            selectedEntryKey = entryKey(entries[0])
+            compare(selectedEntry().provider, "codex")
+        }
+
+        function test_keep_selection_valid_clears_when_empty() {
+            entries = []
+            selectedEntryKey = "stale"
+            keepSelectionValid()
+            compare(selectedEntryKey, "")
+        }
+
+        function test_card_row_overflow_detection() {
+            verify(Math.abs(cardsRowWidth(0, 111.6, 4)) < 0.001)
+            verify(Math.abs(cardsRowWidth(6, 111.6, 4) - 689.6) < 0.001)
+            verify(!cardsRowOverflows(6, 111.6, 4, 744))
+            verify(cardsRowOverflows(7, 111.6, 4, 744))
+        }
+    }
+}
+QML
+    QT_QPA_PLATFORM=offscreen "$qml_test_runner" -input "$tmpdir/tst_display_order.qml" >"$tmpdir/qmltest-display.out" 2>&1 \
+        || fail "aggregate card display regression failed: $(cat "$tmpdir/qmltest-display.out")"
 else
-    printf 'WARN: qmltestrunner unavailable; candidateList regression fell back to structural checks\n' >&2
+    printf 'WARN: qmltestrunner unavailable; candidateList and aggregate card display regressions fell back to structural checks\n' >&2
     grep -q 'codexbar-multi' <<<"$candidate_source" || fail 'legacy aggregate basename no longer recognized in candidateList()'
     grep -q 'kodexbar-multi' <<<"$candidate_source" || fail 'bundled aggregate basename not recognized in candidateList()'
+    grep -q 'deepseek' <<<"$(extract_function visibleEntries)" || fail 'visibleEntries() no longer hides DeepSeek in the aggregate'
+    grep -q 'codex.concat(claude, rest)' <<<"$(extract_function visibleEntries)" || fail 'visibleEntries() no longer orders Claude after Codex'
+    grep -q 'pool\[0\]' <<<"$(extract_function keepSelectionValid)" || fail 'keepSelectionValid() no longer snaps to a visible entry'
 fi
 
 if "$wrapper" usage --account second >"$tmpdir/selector.out" 2>"$tmpdir/selector.err"; then fail 'no-provider account selector returned success'; fi

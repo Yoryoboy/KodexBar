@@ -52,13 +52,52 @@ PlasmoidItem {
         return String(entry.provider || "provider") + "|" + String(entry.account || "") + "|" + String(entry.source || "")
     }
 
-    function selectedEntry() {
+    // The aggregate popup (the default "detect"/"detect" query) receives every
+    // provider in one payload, but the card row intentionally hides DeepSeek to keep
+    // the row narrow. This list is display-only: DeepSeek stays queried, its payload
+    // order is unchanged, and a DeepSeek entry remains fully visible through an
+    // explicit DeepSeek provider selection.
+    function isAggregateView() {
+        return (selectedProvider || "detect") === "detect"
+            && (selectedSource || "detect") === "detect"
+    }
+
+    function visibleEntries() {
+        if (!isAggregateView()) {
+            return entries
+        }
+        var codex = []
+        var claude = []
+        var rest = []
         for (var i = 0; i < entries.length; i++) {
-            if (entryKey(entries[i]) === selectedEntryKey) {
-                return entries[i]
+            var provider = String(entries[i] && entries[i].provider || "").toLowerCase()
+            if (provider === "deepseek") {
+                continue
+            }
+            if (provider === "codex") {
+                codex.push(entries[i])
+            } else if (provider === "claude") {
+                claude.push(entries[i])
+            } else {
+                rest.push(entries[i])
             }
         }
-        return entries.length > 0 ? entries[0] : null
+        // Claude follows the Codex account cards and precedes the remaining providers,
+        // which keeps the aggregate payload order otherwise intact.
+        var ordered = codex.concat(claude, rest)
+        // Never hide every card: when only DeepSeek data is present, show it rather
+        // than leaving an empty row with no selectable card.
+        return ordered.length > 0 ? ordered : entries
+    }
+
+    function selectedEntry() {
+        var pool = visibleEntries()
+        for (var i = 0; i < pool.length; i++) {
+            if (entryKey(pool[i]) === selectedEntryKey) {
+                return pool[i]
+            }
+        }
+        return pool.length > 0 ? pool[0] : null
     }
 
     function isUsableEntry(entry) {
@@ -76,29 +115,30 @@ PlasmoidItem {
     }
 
     function compactEntry() {
+        var pool = visibleEntries()
         var fallback = selectedEntry()
         if (!isUsableEntry(fallback)) {
             fallback = null
-            for (var i = 0; i < entries.length; i++) {
-                if (isUsableEntry(entries[i])) {
-                    fallback = entries[i]
+            for (var i = 0; i < pool.length; i++) {
+                if (isUsableEntry(pool[i])) {
+                    fallback = pool[i]
                     break
                 }
             }
         }
         var newest = null
         var newestTime = -Infinity
-        for (var j = 0; j < entries.length; j++) {
-            if (!isUsableEntry(entries[j])) {
+        for (var j = 0; j < pool.length; j++) {
+            if (!isUsableEntry(pool[j])) {
                 continue
             }
-            var time = activityTime(entries[j])
+            var time = activityTime(pool[j])
             if (isFinite(time) && (newest === null || time > newestTime)) {
-                newest = entries[j]
+                newest = pool[j]
                 newestTime = time
             }
         }
-        return newest || fallback || (entries.length > 0 ? entries[0] : null)
+        return newest || fallback || (pool.length > 0 ? pool[0] : null)
     }
 
     function codexAccountKey(entry) {
@@ -139,16 +179,17 @@ PlasmoidItem {
     }
 
     function keepSelectionValid() {
-        if (entries.length === 0) {
+        var pool = visibleEntries()
+        if (pool.length === 0) {
             selectedEntryKey = ""
             return
         }
-        for (var i = 0; i < entries.length; i++) {
-            if (entryKey(entries[i]) === selectedEntryKey) {
+        for (var i = 0; i < pool.length; i++) {
+            if (entryKey(pool[i]) === selectedEntryKey) {
                 return
             }
         }
-        selectedEntryKey = entryKey(entries[0])
+        selectedEntryKey = entryKey(pool[0])
     }
 
     function formatDuration(seconds) {
@@ -194,6 +235,19 @@ PlasmoidItem {
     function humanWindowTitle(title) {
         var value = String(title || "")
         return value.replace(/[-_]+/g, " ").replace(/\b\w/g, function(letter) { return letter.toUpperCase() })
+    }
+
+    // Pure arithmetic for the card row so the aggregate layout can size the popup
+    // and reserve scrollbar room when the row is wider than the popup.
+    function cardsRowWidth(count, cardWidth, spacing) {
+        if (!count || count <= 0) {
+            return 0
+        }
+        return count * cardWidth + (count - 1) * spacing
+    }
+
+    function cardsRowOverflows(count, cardWidth, spacing, availableWidth) {
+        return cardsRowWidth(count, cardWidth, spacing) > availableWidth
     }
 
     function cardRows(entry) {
@@ -1294,9 +1348,10 @@ PlasmoidItem {
         readonly property real accountCardWidth: Kirigami.Units.gridUnit * 6.2
 
         readonly property int maxCardRows: {
+            var cards = root.visibleEntries()
             var rows = 0
-            for (var i = 0; i < root.entries.length; i++) {
-                rows = Math.max(rows, root.cardRows(root.entries[i]).length)
+            for (var i = 0; i < cards.length; i++) {
+                rows = Math.max(rows, root.cardRows(cards[i]).length)
             }
             return rows
         }
@@ -1304,9 +1359,11 @@ PlasmoidItem {
             + Kirigami.Theme.defaultFont.pixelSize * (2 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
             + Kirigami.Units.smallSpacing * (3 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
         readonly property int naturalPopupHeight: Math.min(content.implicitHeight + popupMargin * 2, maxPopupHeight)
-        readonly property real cardRowWidth: root.entries.length > 0
-            ? root.entries.length * accountCardWidth + (root.entries.length - 1) * Kirigami.Units.smallSpacing
-            : 0
+        readonly property real cardRowWidth: root.cardsRowWidth(root.visibleEntries().length, accountCardWidth, Kirigami.Units.smallSpacing)
+        readonly property bool cardRowOverflows: root.cardsRowOverflows(root.visibleEntries().length, accountCardWidth, Kirigami.Units.smallSpacing, maxPopupWidth - popupMargin * 2)
+        // ScrollView reduces its available height while the horizontal scrollbar is
+        // visible; reserve that room so the cards never get clipped at the bottom.
+        readonly property int cardRowScrollAllowance: cardRowOverflows ? Kirigami.Units.gridUnit : 0
         readonly property real naturalPopupWidth: Math.max(Kirigami.Units.gridUnit * 30,
             Math.min(cardRowWidth + popupMargin * 2, maxPopupWidth))
 
@@ -1329,8 +1386,10 @@ PlasmoidItem {
 
                 QQC2.ScrollView {
                     Layout.fillWidth: true
-                    Layout.preferredHeight: full.accountCardHeight
-                    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff
+                    Layout.preferredHeight: full.accountCardHeight + full.cardRowScrollAllowance
+                    // The card row may be wider than the popup, for example with several
+                    // Codex accounts. Keep it horizontally reachable instead of clipping it.
+                    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded
                     QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff
 
                     Row {
@@ -1339,7 +1398,7 @@ PlasmoidItem {
                         height: full.accountCardHeight
 
                         Repeater {
-                            model: root.entries
+                            model: root.visibleEntries()
                             delegate: Rectangle {
                                 readonly property bool selected: root.entryKey(modelData) === root.selectedEntryKey
                                 readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
