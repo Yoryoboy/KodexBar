@@ -67,9 +67,11 @@ The installer does not edit `plasma-org.kde.plasma.desktop-appletsrc` or restart
 
 ## Bundled multi-provider wrapper
 
-The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command. A no-provider `usage` query asks Codex for `--all-accounts`, OpenCode Go for `--source auto`, DeepSeek for `--source api`, and NaN through its cloud quota helper or `nan` CLI, returning all successful JSON entries. Aggregate entry order is a tested contract: the Codex accounts first, then NaN, then OpenCode Go, then DeepSeek. Successful provider data is retained when another provider fails; failed provider output is omitted. The command fails only if all providers fail or the resulting JSON is invalid.
+The bundled `kodexbar-multi` wrapper is the widget's portable aggregate command. A no-provider `usage` query asks Codex for `--all-accounts`, OpenCode Go for `--source auto`, DeepSeek for `--source api`, Claude for `--provider claude --source cli`, and NaN through its cloud quota helper or `nan` CLI, returning all successful JSON entries. Aggregate entry order is a tested contract: the Codex accounts first, then NaN, then OpenCode Go, then DeepSeek, then Claude. Successful provider data is retained when another provider fails; failed provider output is omitted. The command fails only if all providers fail or the resulting JSON is invalid.
 
 For the current DeepSeek payload shape, the wrapper defensively converts `usage.primary.resetDescription` such as `$2.05 (Paid: $2.05 / Granted: $0.00)` into structured `credits.remaining`, `paidBalance`, `grantedBalance`, and `currencyCode` fields. Unrecognized descriptions are left unchanged. Explicit Codex usage receives `--all-accounts` only when no account selector is present. Non-`usage` commands, including `cost`, pass through unchanged: usage is provider quota/balance data, while cost is a separate local/provider estimate scan.
+
+Claude Code subscription usage is read through the upstream CLI with an explicit `--provider claude --source cli` query. The CLI source matches the installed Claude Code login and avoids the `auto` path, which prefers the claude.ai API and was observed to time out. The query requires an existing Claude Code login (`claude /login`); the wrapper itself never reads Claude credentials, cookies, or session files. The primary (5-hour) and secondary (weekly) rate-limit windows are passed through as reported, including `usedPercent`, `windowMinutes`, `resetsAt`, and `resetDescription`, and the popup renders both without provider-specific handling. A missing, failed, or malformed Claude response is omitted silently and never removes the other providers.
 
 NaN is not a CodexBar provider, so its runner never calls the upstream `codexbar` CLI. It first prefers the local **cloud quota helper**, which reads the existing Chrome session, and falls back to the `nan` CLI metrics when that helper is missing or fails.
 
@@ -205,6 +207,7 @@ Uninstall preserves an unrecognized user-owned `kodexbar-multi` or `nan-cloud-qu
 | `kodexbar-multi` cannot find upstream CodexBar | Confirm `codexbar` is executable, or export `KODEXBAR_CODEXBAR_COMMAND` in the environment that launches Plasma. |
 | Only some aggregate providers appear | Check the unavailable provider's credentials/source; successful providers are intentionally preserved. |
 | NaN usage never appears | Install the `nan` CLI (`nan auth login`) or export `KODEXBAR_NAN_COMMAND` to its executable path in the environment that launches Plasma. |
+| Claude Code windows never appear | Sign in with `claude /login`; the aggregate queries Claude with `--provider claude --source cli`. |
 | NaN cloud quota rows never appear | The helper needs Python 3 with `cryptography`, `kwallet-query`, an unlocked KDE KWallet `Chrome Safe Storage` entry, and a signed-in Linux Google Chrome `Default` profile. Any missing or inaccessible piece fails closed and the popup falls back to `nan` CLI token totals. |
 | Installer refuses a dependency | Install Bash, `jq`, `kpackagetool6`, or upstream `codexbar`; the installer never downloads dependencies. |
 

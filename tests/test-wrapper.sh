@@ -30,6 +30,20 @@ elif [[ $* == *"--provider opencodego"* ]]; then
     if [[ ${FAKE_MODE:-normal} == multiple-opencode ]]; then cat "$FAKE_FIXTURES/opencodego-multiple.json"; else cat "$FAKE_FIXTURES/opencodego.json"; fi
 elif [[ $* == *"--provider deepseek"* ]]; then
     if [[ ${FAKE_MODE:-normal} == unmatched ]]; then cat "$FAKE_FIXTURES/deepseek-unmatched.json"; else cat "$FAKE_FIXTURES/deepseek.json"; fi
+elif [[ $* == *"--provider claude"* ]]; then
+    case ${FAKE_MODE:-normal} in
+        claude-missing) exit 0 ;;
+        claude-fail) exit 1 ;;
+        claude-invalid) printf 'not json\n'; exit 0 ;;
+        claude-empty) printf '{}\n'; exit 0 ;;
+        claude-wrong-provider) printf '{"provider":"gemini","usage":{"primary":{"usedPercent":10}}}\n'; exit 0 ;;
+        claude-no-window) printf '{"provider":"claude","usage":{"primary":{"resetsAt":"2026-09-21T21:00:00Z"},"secondary":{}}}\n'; exit 0 ;;
+        claude-primary-only) printf '{"provider":"claude","usage":{"primary":{"usedPercent":25}}}\n'; exit 0 ;;
+        claude-remaining-percent) printf '{"provider":"claude","usage":{"secondary":{"remainingPercent":40}}}\n'; exit 0 ;;
+        claude-array-valid) printf '[{"provider":"claude","usage":{"primary":{"usedPercent":25}}} ]\n'; exit 0 ;;
+        claude-array-mixed) printf '[{"provider":"claude","usage":{"primary":{"usedPercent":25}}},{}]\n'; exit 0 ;;
+        *) cat "$FAKE_FIXTURES/claude.json" ;;
+    esac
 elif [[ $1 == cost ]]; then printf '{"provider":"codex","totals":{"totalCost":1}}\n'
 else printf '{"provider":"custom"}\n'; fi
 FAKE
@@ -86,42 +100,89 @@ assert() { "$@" || fail "$*"; }
 assert_json() { jq -e "$1" >/dev/null <<<"$2" || fail "jq $1"; }
 
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 4 and any(.[]; .provider == "codex" and .activity.lastActivityAt == "2025-01-02T03:04:05Z") and any(.[]; .provider == "opencodego" and .activity.lastActivityAt == "2025-01-04T03:04:05Z") and any(.[]; .provider == "deepseek")' "$out"
+assert_json 'length == 5 and any(.[]; .provider == "codex" and .activity.lastActivityAt == "2025-01-02T03:04:05Z") and any(.[]; .provider == "opencodego" and .activity.lastActivityAt == "2025-01-04T03:04:05Z") and any(.[]; .provider == "deepseek") and any(.[]; .provider == "claude")' "$out"
 assert_json '.[] | select(.provider == "deepseek") | .credits | .remaining == 2.05 and .paidBalance == 2.05 and .grantedBalance == 0 and .currencyCode == "USD"' "$out"
 
 export KODEXBAR_NAN_COMMAND=$fake_nan
 unset FAKE_NAN_MODE
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli" and .account == "nan@example.com" and .usage.updatedAt == "2026-09-21T16:11:42Z" and .usage.nan.monthToDate.totalTokens == 930278 and .usage.nan.last30d.totalTokens == 930278)' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli" and .account == "nan@example.com" and .usage.updatedAt == "2026-09-21T16:11:42Z" and .usage.nan.monthToDate.totalTokens == 930278 and .usage.nan.last30d.totalTokens == 930278)' "$out"
 assert_json '.[] | select(.provider == "nan") | .usage.nan.monthToDate.byModel[0].model == "deepseek-v4-flash" and .usage.nan.monthToDate.byModel[0].inputTokens == 690429 and .usage.nan.monthToDate.byModel[0].outputTokens == 10442' "$out"
 # The aggregate contract pins the provider order end to end: the Codex accounts
-# first, then NaN, then OpenCode Go, then DeepSeek. Asserting the exact ordered
-# provider sequence (not just membership) fails if the order regresses.
-assert_json 'map(.provider) == ["codex", "codex", "nan", "opencodego", "deepseek"]' "$out"
+# first, then NaN, then OpenCode Go, then DeepSeek, then Claude. Asserting the exact
+# ordered provider sequence (not just membership) fails if the order regresses.
+assert_json 'map(.provider) == ["codex", "codex", "nan", "opencodego", "deepseek", "claude"]' "$out"
 export FAKE_NAN_MODE=me-fail
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and (.account == null) and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and (.account == null) and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
 unset FAKE_NAN_MODE
 
 # A failed, invalid, or missing NaN binary is silent; the other providers still aggregate.
 export KODEXBAR_NAN_COMMAND=$tmpdir/missing-nan
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
+assert_json 'length == 5 and all(.[]; .provider != "nan")' "$out"
 export KODEXBAR_NAN_COMMAND=$fake_nan
 export FAKE_NAN_MODE=metrics-fail
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
+assert_json 'length == 5 and all(.[]; .provider != "nan")' "$out"
 export FAKE_NAN_MODE=metrics-invalid
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 4 and all(.[]; .provider != "nan")' "$out"
+assert_json 'length == 5 and all(.[]; .provider != "nan")' "$out"
 # A transient first `metrics usage` failure is recovered by the single retry.
 export FAKE_NAN_MODE=metrics-flaky
 : >"$nan_counter"
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .account == "nan@example.com" and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .account == "nan@example.com" and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
 assert grep -q '^2$' "$nan_counter"
 unset FAKE_NAN_MODE
 export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
+
+# --- Claude Code subscription windows ----------------------------------------
+# Claude is an upstream CodexBar provider queried with an explicit CLI source, so the
+# wrapper never reads a Claude credential or session file itself. The sanitized
+# fixture carries the primary (5-hour) and secondary (weekly) windows observed from
+# `codexbar usage --provider claude --source cli --format json --json-only`.
+: >"$log"
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "claude")' "$out"
+assert_json '.[] | select(.provider == "claude") | .usage.primary.windowMinutes == 300 and .usage.secondary.windowMinutes == 10080 and .usage.primary.usedPercent == 25 and .usage.secondary.usedPercent == 60 and .usage.primary.resetsAt == "2026-09-21T21:00:00Z" and .usage.primary.resetDescription == "Resets in 4 hours" and .usage.secondary.resetDescription == "Resets in 3 days"' "$out"
+assert grep -q -- "--provider claude --source cli" "$log"
+
+# A missing, failed, or invalid Claude query is omitted without dropping peers.
+export FAKE_MODE=claude-missing
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 4 and all(.[]; .provider != "claude") and any(.[]; .provider == "deepseek")' "$out"
+export FAKE_MODE=claude-fail
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 4 and all(.[]; .provider != "claude") and any(.[]; .provider == "deepseek")' "$out"
+export FAKE_MODE=claude-invalid
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 4 and all(.[]; .provider != "claude") and any(.[]; .provider == "deepseek")' "$out"
+# Truthy off-shape payloads are still invalid: an empty object, another provider's
+# entry, or a Claude entry without any usable percentage window must be omitted.
+for mode in claude-empty claude-wrong-provider claude-no-window; do
+    export FAKE_MODE=$mode
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json 'length == 4 and all(.[]; .provider != "claude") and any(.[]; .provider == "deepseek")' "$out"
+done
+unset FAKE_MODE
+# One usable window is enough: the secondary (weekly) window may be absent.
+export FAKE_MODE=claude-primary-only
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "claude" and .usage.primary.usedPercent == 25 and (.usage.secondary == null))' "$out"
+# A remaining-percent window and the array form are both accepted, matching the QML
+# and the aggregate's array-tolerant providers.
+export FAKE_MODE=claude-remaining-percent
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "claude" and .usage.secondary.remainingPercent == 40)' "$out"
+export FAKE_MODE=claude-array-valid
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 5 and any(.[]; .provider == "claude" and .usage.primary.usedPercent == 25)' "$out"
+# A single invalid element invalidates the whole array response.
+export FAKE_MODE=claude-array-mixed
+out=$("$wrapper" usage --format json --json-only)
+assert_json 'length == 4 and all(.[]; .provider != "claude") and any(.[]; .provider == "deepseek")' "$out"
+unset FAKE_MODE
 
 # --- NaN cloud quota helper -----------------------------------------------------------------
 # The helper is always mocked: no test reads a live Chrome cookie, KWallet entry, or network.
@@ -146,42 +207,42 @@ unset FAKE_QUOTA_MODE
 export KODEXBAR_NAN_COMMAND=$fake_nan
 export KODEXBAR_NAN_QUOTA_COMMAND=$fake_quota
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and (map(.provider) == ["codex", "codex", "nan", "opencodego", "deepseek"])' "$out"
+assert_json 'length == 6 and (map(.provider) == ["codex", "codex", "nan", "opencodego", "deepseek", "claude"])' "$out"
 assert_json '.[] | select(.provider == "nan") | .source == "cloud" and .account == "nan@example.com" and (.usage.nan == null) and .usage.updatedAt == "2026-09-21T16:11:42Z" and .usage.nanQuota.models[0].model == "deepseek-v4-flash" and .usage.nanQuota.models[0].tokensUsed == 125000 and .usage.nanQuota.models[0].cap == 500000 and .usage.nanQuota.models[0].remaining == 375000 and .usage.nanQuota.models[0].windowHours == 24 and .usage.nanQuota.models[0].periodEnd == "2026-10-01T00:00:00Z"' "$out"
 
 # Cloud quota still appears when no nan CLI exists: the helper owns the Chrome session read.
 export KODEXBAR_NAN_COMMAND=$tmpdir/missing-nan
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cloud" and (.account == null))' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cloud" and (.account == null))' "$out"
 export KODEXBAR_NAN_COMMAND=$fake_nan
 
 # Any helper failure preserves the CLI metrics fallback.
 export FAKE_QUOTA_MODE=fail
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli" and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli" and .usage.nan.monthToDate.totalTokens == 930278)' "$out"
 export FAKE_QUOTA_MODE=invalid
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
 # A structurally valid envelope with a malformed model must not win the cloud
 # branch and leave blank popup rows: each case falls back to CLI metrics.
 export FAKE_QUOTA_MODE=malformed-model
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli") and all(.[]; (.provider != "nan") or (.usage.nanQuota == null))' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli") and all(.[]; (.provider != "nan") or (.usage.nanQuota == null))' "$out"
 export FAKE_QUOTA_MODE=malformed-model-fields
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
 export FAKE_QUOTA_MODE=malformed-optional
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
 export FAKE_QUOTA_MODE=empty-models
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
 unset FAKE_QUOTA_MODE
 
 # A missing helper target also falls back to the CLI.
 export KODEXBAR_NAN_QUOTA_COMMAND=$tmpdir/missing-quota-helper
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cli")' "$out"
 
 # Resolution without an override: the copy installed next to the wrapper wins.
 sibling_dir=$tmpdir/sibling/bin
@@ -189,16 +250,27 @@ mkdir -p "$sibling_dir"
 cp "$wrapper" "$sibling_dir/kodexbar-multi"
 cp "$fake_quota" "$sibling_dir/nan-cloud-quota"
 out=$(env -u KODEXBAR_NAN_QUOTA_COMMAND KODEXBAR_NAN_COMMAND="$fake_nan" "$sibling_dir/kodexbar-multi" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cloud")' "$out"
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cloud")' "$out"
 
-# With no sibling, the ${XDG_BIN_HOME:-~/.local/bin} install path is used.
+# With no sibling, the ${XDG_BIN_HOME:-~/.local/bin} install path is used. The wrapper
+# resolves sibling, then PATH, then XDG_BIN_HOME, so a host-installed nan-cloud-quota
+# on PATH would legitimately win and mask the fallback this case targets. Build a
+# self-contained PATH that links only the external tools the wrapper and its mocked
+# helpers need, so the case is isolated from host PATH entries without hiding any
+# required tool. The production resolution order is untouched.
+isolated_path=$tmpdir/isolated-path
+mkdir -p "$isolated_path"
+for tool in awk bash cat date dirname find grep head jq mktemp mv readlink rm sleep sort sqlite3 tr; do
+    tool_path=$(command -v "$tool" 2>/dev/null) || continue
+    ln -s "$tool_path" "$isolated_path/$tool"
+done
 installed_dir=$tmpdir/installed/bin
 installed_home=$tmpdir/installed-home
 mkdir -p "$installed_dir" "$installed_home"
 cp "$wrapper" "$installed_dir/kodexbar-multi"
 cp "$fake_quota" "$installed_home/nan-cloud-quota"
-out=$(env -u KODEXBAR_NAN_QUOTA_COMMAND XDG_BIN_HOME="$installed_home" HOME="$tmpdir/empty-home" KODEXBAR_NAN_COMMAND="$fake_nan" "$installed_dir/kodexbar-multi" usage --format json --json-only)
-assert_json 'length == 5 and any(.[]; .provider == "nan" and .source == "cloud")' "$out"
+out=$(env -u KODEXBAR_NAN_QUOTA_COMMAND PATH="$isolated_path" XDG_BIN_HOME="$installed_home" HOME="$tmpdir/empty-home" KODEXBAR_NAN_COMMAND="$fake_nan" "$installed_dir/kodexbar-multi" usage --format json --json-only)
+assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cloud")' "$out"
 export KODEXBAR_NAN_QUOTA_COMMAND=$tmpdir/no-quota-helper
 
 # Helper diagnostics must never reach the aggregate or the wrapper's stderr.
@@ -214,7 +286,7 @@ export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
 
 export FAKE_MODE=multiple-opencode
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 5 and all(.[]; (.provider != "opencodego" or .activity == null))' "$out"
+assert_json 'length == 6 and all(.[]; (.provider != "opencodego" or .activity == null))' "$out"
 unset FAKE_MODE
 
 export FAKE_MODE=unmatched
@@ -225,7 +297,7 @@ export FAKE_MODE=normal
 : >"$log"
 export FAKE_MODE=partial
 out=$("$wrapper" usage --format json --json-only)
-assert_json 'length == 3 and all(.[]; .provider != "opencodego")' "$out"
+assert_json 'length == 4 and all(.[]; .provider != "opencodego") and any(.[]; .provider == "claude")' "$out"
 
 unset FAKE_MODE KODEXBAR_CODEX_ACCOUNT_HOMES
 export HOME=$tmpdir/test-home
@@ -252,8 +324,11 @@ assert_json 'all(.[]; .provider != "codex" or .activity == null)' "$out"
 unset FAKE_MODE FAKE_MODE_AUTO_RESULT XDG_CONFIG_HOME
 
 export FAKE_MODE=fail-all
+: >"$log"
 if "$wrapper" usage --format json --json-only >"$tmpdir/all.out" 2>"$tmpdir/all.err"; then fail 'all-provider failure returned success'; fi
 assert grep -q "all provider usage queries failed" "$tmpdir/all.err"
+# The all-provider failure includes Claude: it was queried with the explicit CLI source.
+assert grep -q -- "--provider claude --source cli" "$log"
 unset FAKE_MODE
 export XDG_DATA_HOME=$tmpdir/missing-data
 out=$("$wrapper" usage --format json --json-only)

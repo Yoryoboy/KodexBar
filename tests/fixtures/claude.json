@@ -1,0 +1,1 @@
+{"provider":"claude","usage":{"primary":{"usedPercent":25,"windowMinutes":300,"resetsAt":"2026-09-21T21:00:00Z","resetDescription":"Resets in 4 hours"},"secondary":{"usedPercent":60,"windowMinutes":10080,"resetsAt":"2026-09-28T00:00:00Z","resetDescription":"Resets in 3 days"}}}
