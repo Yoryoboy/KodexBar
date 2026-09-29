@@ -238,7 +238,7 @@ PlasmoidItem {
     }
 
     // Pure arithmetic for the card row so the aggregate layout can size the popup
-    // and reserve scrollbar room when the row is wider than the popup.
+    // to the visible cards and decide when they must wrap into extra rows.
     function cardsRowWidth(count, cardWidth, spacing) {
         if (!count || count <= 0) {
             return 0
@@ -248,6 +248,57 @@ PlasmoidItem {
 
     function cardsRowOverflows(count, cardWidth, spacing, availableWidth) {
         return cardsRowWidth(count, cardWidth, spacing) > availableWidth
+    }
+
+    // The card row never scrolls horizontally: the popup is sized to the visible
+    // cards, and a row that cannot fit within the available width wraps into extra
+    // rows. These are pure functions so the sizing contract is testable without a
+    // running Plasma shell.
+    function cardsPerRow(cardCount, cardWidth, spacing, availableWidth) {
+        if (!cardCount || cardCount <= 0) {
+            return 0
+        }
+        var perRow = Math.floor((availableWidth + spacing) / (cardWidth + spacing))
+        if (!isFinite(perRow) || perRow < 1) {
+            perRow = 1
+        }
+        return Math.min(cardCount, perRow)
+    }
+
+    function cardsRowCount(cardCount, cardWidth, spacing, availableWidth) {
+        var perRow = cardsPerRow(cardCount, cardWidth, spacing, availableWidth)
+        if (perRow <= 0) {
+            return 0
+        }
+        return Math.ceil(cardCount / perRow)
+    }
+
+    function cardsGridHeight(rowCount, cardHeight, spacing) {
+        if (!rowCount || rowCount <= 0) {
+            return 0
+        }
+        return rowCount * cardHeight + (rowCount - 1) * spacing
+    }
+
+    // One card reserves an icon, a name line, an optional account line and one
+    // value line per usage row. Keeping it pure lets the "tallest card covers every
+    // OpenCode window" contract be exercised without a Plasma shell.
+    function cardHeight(iconSize, fontPixelSize, rowCount, accountLines, spacing) {
+        var lines = (rowCount || 0) + (accountLines || 0)
+        return iconSize + fontPixelSize * (2 + lines) + spacing * (3 + lines)
+    }
+
+    // Popup width follows the wrapped card row so six cards share one row when the
+    // screen allows it. It is floored at a readable minimum and clamped to the
+    // available screen width so a very narrow display compresses the cards instead
+    // of letting the popup run off screen; wrap mathematics keep the row inside.
+    function popupWidthForCards(cardCount, cardWidth, spacing, availableWidth, margin, minWidth, maxWidth) {
+        var columns = cardsPerRow(cardCount, cardWidth, spacing, availableWidth)
+        var width = Math.max(minWidth, cardsRowWidth(columns, cardWidth, spacing) + margin * 2)
+        if (maxWidth > 0) {
+            width = Math.min(width, maxWidth)
+        }
+        return width
     }
 
     function cardRows(entry) {
@@ -1344,8 +1395,8 @@ PlasmoidItem {
         id: full
         readonly property int popupMargin: Kirigami.Units.largeSpacing * 2
         readonly property int maxPopupHeight: Kirigami.Units.gridUnit * 44
-        readonly property int maxPopupWidth: Kirigami.Units.gridUnit * 44
         readonly property real accountCardWidth: Kirigami.Units.gridUnit * 6.2
+        readonly property int cardSpacing: Kirigami.Units.smallSpacing
 
         readonly property int maxCardRows: {
             var cards = root.visibleEntries()
@@ -1355,17 +1406,27 @@ PlasmoidItem {
             }
             return rows
         }
-        readonly property int accountCardHeight: Kirigami.Units.iconSizes.small
-            + Kirigami.Theme.defaultFont.pixelSize * (2 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
-            + Kirigami.Units.smallSpacing * (3 + (root.showEmailInWidget ? 1 : 0) + maxCardRows)
+        readonly property int accountCardHeight: root.cardHeight(Kirigami.Units.iconSizes.small,
+            Kirigami.Theme.defaultFont.pixelSize, maxCardRows, root.showEmailInWidget ? 1 : 0,
+            Kirigami.Units.smallSpacing)
+
+        // The card row has no horizontal scrollbar. The popup width follows the
+        // visible cards so six cards share one row at ordinary desktop widths, and
+        // when the available screen width cannot hold that row the cards wrap into
+        // additional rows. cardsGridHeight always reserves every wrapped row so the
+        // tallest card (for example OpenCode's Monthly window) stays fully visible.
+        readonly property int cardCount: root.visibleEntries().length
+        readonly property int screenAvailableWidth: {
+            var width = root.availableScreenRect ? root.availableScreenRect.width : 0
+            return width > 0 ? width : Kirigami.Units.gridUnit * 60
+        }
+        readonly property int cardAreaMaxWidth: Math.max(accountCardWidth, screenAvailableWidth - popupMargin * 2)
+        readonly property int cardColumns: root.cardsPerRow(cardCount, accountCardWidth, cardSpacing, cardAreaMaxWidth)
+        readonly property int cardRowCount: root.cardsRowCount(cardCount, accountCardWidth, cardSpacing, cardAreaMaxWidth)
+        readonly property int cardsGridHeight: root.cardsGridHeight(cardRowCount, accountCardHeight, cardSpacing)
         readonly property int naturalPopupHeight: Math.min(content.implicitHeight + popupMargin * 2, maxPopupHeight)
-        readonly property real cardRowWidth: root.cardsRowWidth(root.visibleEntries().length, accountCardWidth, Kirigami.Units.smallSpacing)
-        readonly property bool cardRowOverflows: root.cardsRowOverflows(root.visibleEntries().length, accountCardWidth, Kirigami.Units.smallSpacing, maxPopupWidth - popupMargin * 2)
-        // ScrollView reduces its available height while the horizontal scrollbar is
-        // visible; reserve that room so the cards never get clipped at the bottom.
-        readonly property int cardRowScrollAllowance: cardRowOverflows ? Kirigami.Units.gridUnit : 0
-        readonly property real naturalPopupWidth: Math.max(Kirigami.Units.gridUnit * 30,
-            Math.min(cardRowWidth + popupMargin * 2, maxPopupWidth))
+        readonly property real naturalPopupWidth: root.popupWidthForCards(cardCount, accountCardWidth,
+            cardSpacing, cardAreaMaxWidth, popupMargin, Kirigami.Units.gridUnit * 30, screenAvailableWidth)
 
         Layout.minimumWidth: naturalPopupWidth
         Layout.minimumHeight: naturalPopupHeight
@@ -1380,85 +1441,84 @@ PlasmoidItem {
             anchors.margins: full.popupMargin
             spacing: Kirigami.Units.largeSpacing
 
-            RowLayout {
+            GridLayout {
+                id: accountCards
                 Layout.fillWidth: true
-                spacing: Kirigami.Units.smallSpacing
+                Layout.preferredHeight: full.cardsGridHeight
+                // Allow the row to shrink below its preferred content width when the
+                // popup is clamped narrower than one card, so the cards fit inside.
+                Layout.minimumWidth: 0
+                // Keep every wrapped row at its natural height so the popup cap
+                // shrinks only the scrollable usage list, never the cards.
+                Layout.minimumHeight: full.cardsGridHeight
+                columns: Math.max(1, full.cardColumns)
+                columnSpacing: full.cardSpacing
+                rowSpacing: full.cardSpacing
 
-                QQC2.ScrollView {
-                    Layout.fillWidth: true
-                    Layout.preferredHeight: full.accountCardHeight + full.cardRowScrollAllowance
-                    // The card row may be wider than the popup, for example with several
-                    // Codex accounts. Keep it horizontally reachable instead of clipping it.
-                    QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded
-                    QQC2.ScrollBar.vertical.policy: QQC2.ScrollBar.AlwaysOff
+                Repeater {
+                    model: root.visibleEntries()
+                    delegate: Rectangle {
+                        readonly property bool selected: root.entryKey(modelData) === root.selectedEntryKey
+                        readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
+                        // Preferred card width, but flexible: the column fills the
+                        // popup inner width, shrinking below this only on a screen
+                        // narrower than one card (text elides) and never exceeding it.
+                        Layout.preferredWidth: full.accountCardWidth
+                        Layout.maximumWidth: full.accountCardWidth
+                        Layout.fillWidth: true
+                        Layout.preferredHeight: full.accountCardHeight
+                        radius: Kirigami.Units.cornerRadius
+                        color: selected ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.16) : Kirigami.Theme.backgroundColor
+                        border.width: selected ? 1 : 0
+                        border.color: Kirigami.Theme.highlightColor
+                        opacity: modelData.errorMessage ? 0.62 : 1
 
-                    Row {
-                        id: accountCards
-                        spacing: Kirigami.Units.smallSpacing
-                        height: full.accountCardHeight
-
-                        Repeater {
-                            model: root.visibleEntries()
-                            delegate: Rectangle {
-                                readonly property bool selected: root.entryKey(modelData) === root.selectedEntryKey
-                                readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
-                                width: full.accountCardWidth
-                                height: full.accountCardHeight
-                                radius: Kirigami.Units.cornerRadius
-                                color: selected ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.16) : Kirigami.Theme.backgroundColor
-                                border.width: selected ? 1 : 0
-                                border.color: Kirigami.Theme.highlightColor
-                                opacity: modelData.errorMessage ? 0.62 : 1
-
-                                MouseArea {
-                                    anchors.fill: parent
-                                    onClicked: root.selectedEntryKey = root.entryKey(modelData)
-                                    cursorShape: Qt.PointingHandCursor
-                                }
-                                ColumnLayout {
-                                    anchors.fill: parent
-                                    anchors.margins: Kirigami.Units.smallSpacing
+                        MouseArea {
+                            anchors.fill: parent
+                            onClicked: root.selectedEntryKey = root.entryKey(modelData)
+                            cursorShape: Qt.PointingHandCursor
+                        }
+                        ColumnLayout {
+                            anchors.fill: parent
+                            anchors.margins: Kirigami.Units.smallSpacing
+                            spacing: Kirigami.Units.smallSpacing / 2
+                            Kirigami.Icon {
+                                source: root.providerIconSource(modelData.provider)
+                                isMask: true
+                                color: Kirigami.Theme.textColor
+                                implicitWidth: Kirigami.Units.iconSizes.small
+                                implicitHeight: Kirigami.Units.iconSizes.small
+                                Layout.alignment: Qt.AlignHCenter
+                            }
+                            PlasmaComponents.Label {
+                                text: modelData.name || modelData.provider
+                                horizontalAlignment: Text.AlignHCenter
+                                font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                font.weight: selected ? Font.DemiBold : Font.Normal
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            PlasmaComponents.Label {
+                                text: root.showEmailInWidget && modelData.account ? modelData.account : ""
+                                visible: text.length > 0
+                                horizontalAlignment: Text.AlignHCenter
+                                color: Kirigami.Theme.disabledTextColor
+                                font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            Repeater {
+                                model: root.cardRows(modelData)
+                                delegate: RowLayout {
                                     spacing: Kirigami.Units.smallSpacing / 2
-                                    Kirigami.Icon {
-                                        source: root.providerIconSource(modelData.provider)
-                                        isMask: true
-                                        color: Kirigami.Theme.textColor
-                                        implicitWidth: Kirigami.Units.iconSizes.small
-                                        implicitHeight: Kirigami.Units.iconSizes.small
-                                        Layout.alignment: Qt.AlignHCenter
-                                    }
-                                    PlasmaComponents.Label {
-                                        text: modelData.name || modelData.provider
-                                        horizontalAlignment: Text.AlignHCenter
-                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
-                                        font.weight: selected ? Font.DemiBold : Font.Normal
-                                        elide: Text.ElideRight
-                                        Layout.fillWidth: true
-                                    }
-                                    PlasmaComponents.Label {
-                                        text: root.showEmailInWidget && modelData.account ? modelData.account : ""
-                                        visible: text.length > 0
-                                        horizontalAlignment: Text.AlignHCenter
-                                        color: Kirigami.Theme.disabledTextColor
-                                        font.pointSize: Kirigami.Theme.smallFont.pointSize
-                                        elide: Text.ElideRight
-                                        Layout.fillWidth: true
-                                    }
-                                    Repeater {
-                                        model: root.cardRows(modelData)
-                                        delegate: RowLayout {
-                                            spacing: Kirigami.Units.smallSpacing / 2
-                                            Layout.fillWidth: true
-                                            PlasmaComponents.Label { text: modelData.label; color: Kirigami.Theme.disabledTextColor; font.pointSize: Kirigami.Theme.smallFont.pointSize; Layout.fillWidth: true }
-                                            PlasmaComponents.Label { text: modelData.value; color: modelData.color; font.pointSize: Kirigami.Theme.smallFont.pointSize; font.weight: Font.DemiBold }
-                                        }
-                                    }
+                                    Layout.fillWidth: true
+                                    PlasmaComponents.Label { text: modelData.label; color: Kirigami.Theme.disabledTextColor; font.pointSize: Kirigami.Theme.smallFont.pointSize; Layout.fillWidth: true }
+                                    PlasmaComponents.Label { text: modelData.value; color: modelData.color; font.pointSize: Kirigami.Theme.smallFont.pointSize; font.weight: Font.DemiBold }
                                 }
                             }
                         }
                     }
                 }
-
             }
 
             Kirigami.Separator {

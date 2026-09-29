@@ -340,10 +340,37 @@ assert grep -q 'keys.sort()' "$root/contents/ui/main.qml"
 assert grep -q 'entry.creditsRemaining > 0' "$root/contents/ui/main.qml"
 
 # Aggregate card display: the popup hides DeepSeek, keeps Claude before the
-# remaining providers, and scrolls a wide card row instead of clipping it.
+# remaining providers, and wraps a wide card row into extra rows instead of
+# clipping it or scrolling horizontally.
 assert grep -q 'function visibleEntries' "$root/contents/ui/main.qml"
 assert grep -q 'model: root.visibleEntries()' "$root/contents/ui/main.qml"
-assert grep -q 'QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded' "$root/contents/ui/main.qml"
+assert grep -q 'columns: Math.max(1, full.cardColumns)' "$root/contents/ui/main.qml"
+assert grep -q 'Layout.preferredHeight: full.cardsGridHeight' "$root/contents/ui/main.qml"
+assert grep -q 'Layout.minimumHeight: full.cardsGridHeight' "$root/contents/ui/main.qml"
+# The card height is derived from the tallest visible card so OpenCode's third
+# (Monthly) window always has room, and the popup width is computed from the
+# wrapped row instead of a fixed cap.
+assert grep -q 'function cardHeight' "$root/contents/ui/main.qml"
+assert grep -q 'function popupWidthForCards' "$root/contents/ui/main.qml"
+assert grep -q 'root.cardHeight(' "$root/contents/ui/main.qml"
+assert grep -q 'root.popupWidthForCards(' "$root/contents/ui/main.qml"
+# On a screen narrower than one card the popup is clamped to the screen, so the
+# card row and the card itself must both be allowed to shrink below their preferred
+# width instead of spilling past the popup edge.
+assert grep -q 'Layout.minimumWidth: 0' "$root/contents/ui/main.qml"
+assert grep -q 'Layout.maximumWidth: full.accountCardWidth' "$root/contents/ui/main.qml"
+max_card_rows_body=$(grep -A6 'readonly property int maxCardRows' "$root/contents/ui/main.qml")
+grep -q 'root.visibleEntries()' <<<"$max_card_rows_body" || fail 'maxCardRows no longer derives from the visible cards'
+assert grep -q 'i18n("Monthly")' "$root/contents/ui/main.qml"
+if grep -q 'maxPopupWidth' "$root/contents/ui/main.qml"; then
+    fail 'a fixed popup width cap was reintroduced'
+fi
+# The card row must never regain a horizontal scrollbar. The popup's only ScrollView
+# is the vertical usage list, whose horizontal policy stays AlwaysOff.
+assert grep -q 'QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AlwaysOff' "$root/contents/ui/main.qml"
+if grep -q 'QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded' "$root/contents/ui/main.qml"; then
+    fail 'a horizontal ScrollView policy was reintroduced'
+fi
 
 # NaN cloud quota rendering: the popup must prefer the helper's per-model quota
 # payload, keep the CLI token fallback, and label the period explicitly instead
@@ -380,7 +407,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in isAggregateView visibleEntries entryKey selectedEntry keepSelectionValid cardsRowWidth cardsRowOverflows; do
+for name in isAggregateView visibleEntries entryKey selectedEntry keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -442,6 +469,7 @@ QML
 
     cat >"$tmpdir/tst_display_order.qml" <<QML
 import QtQuick
+import QtQuick.Layouts
 import QtTest
 
 Item {
@@ -449,6 +477,39 @@ Item {
     property string selectedProvider: "detect"
     property string selectedSource: "detect"
     property string selectedEntryKey: ""
+
+    // Mirrors the card row in main.qml: a ColumnLayout constrains the card
+    // GridLayout to the popup inner width, the grid may shrink below its preferred
+    // content width, and the card fills the column up to its preferred width. If
+    // the shrink permission or the delegate's flexible width regresses, probeCard
+    // keeps its preferred width and spills past probeGrid and this test fails.
+    readonly property real probeInnerWidth: 78
+
+    Item {
+        width: probeInnerWidth
+        height: 40
+        ColumnLayout {
+            id: probeContent
+            anchors.fill: parent
+            spacing: 0
+            GridLayout {
+                id: probeGrid
+                Layout.fillWidth: true
+                Layout.minimumWidth: 0
+                Layout.preferredHeight: 40
+                columns: 1
+                columnSpacing: 4
+                rowSpacing: 4
+                Rectangle {
+                    id: probeCard
+                    Layout.preferredWidth: 111.6
+                    Layout.maximumWidth: 111.6
+                    Layout.fillWidth: true
+                    Layout.preferredHeight: 40
+                }
+            }
+        }
+    }
 
 $display_functions
     TestCase {
@@ -533,6 +594,104 @@ $display_functions
             verify(!cardsRowOverflows(6, 111.6, 4, 744))
             verify(cardsRowOverflows(7, 111.6, 4, 744))
         }
+
+        function test_card_row_wrap_arithmetic() {
+            // Six cards share one row at an ordinary desktop width.
+            compare(cardsPerRow(6, 111.6, 4, 800), 6)
+            compare(cardsRowCount(6, 111.6, 4, 800), 1)
+            // A width that cannot hold all six wraps into two rows instead of
+            // overflowing horizontally.
+            compare(cardsPerRow(6, 111.6, 4, 600), 5)
+            compare(cardsRowCount(6, 111.6, 4, 600), 2)
+            // Height reserves every wrapped row so no card clips at the bottom.
+            compare(cardsGridHeight(2, 50, 4), 104)
+            compare(cardsGridHeight(1, 50, 4), 50)
+            compare(cardsGridHeight(0, 50, 4), 0)
+        }
+
+        function test_wrapped_layout_never_overflows_available_width() {
+            // The chosen column count always fits the available width, so the popup
+            // wraps instead of needing a horizontal scrollbar.
+            var widths = [744, 689.6, 600, 300, 120]
+            for (var i = 0; i < widths.length; i++) {
+                var columns = cardsPerRow(6, 111.6, 4, widths[i])
+                verify(columns >= 1)
+                verify(!cardsRowOverflows(columns, 111.6, 4, widths[i]))
+            }
+        }
+
+        function test_single_row_when_six_cards_fit() {
+            // Exactly enough room for all six cards stays a single row.
+            verify(!cardsRowOverflows(6, 111.6, 4, 689.6))
+            compare(cardsRowCount(6, 111.6, 4, 690), 1)
+            compare(cardsPerRow(6, 111.6, 4, 690), 6)
+            // A tiny width still yields at least one column, never zero.
+            compare(cardsPerRow(6, 111.6, 4, 10), 1)
+            compare(cardsRowCount(6, 111.6, 4, 10), 6)
+        }
+
+        function test_card_height_covers_every_usage_row() {
+            // Each additional usage row (for example OpenCode's Monthly window)
+            // grows the card by one full text line plus one row spacing, so a card
+            // tall enough for two windows also reserves the third.
+            var twoRows = cardHeight(16, 15, 2, 0, 4)
+            var threeRows = cardHeight(16, 15, 3, 0, 4)
+            compare(threeRows - twoRows, 19)
+            verify(threeRows >= twoRows + 15)
+            // The optional account line reserves the same amount of room.
+            compare(cardHeight(16, 15, 3, 1, 4) - threeRows, 19)
+            // A zero-row card still reserves its icon and name line.
+            verify(cardHeight(16, 15, 0, 0, 4) > 0)
+        }
+
+        function test_popup_width_fits_six_card_row() {
+            // Six cards on an ordinary desktop share one row and the popup width is
+            // exactly that row plus both margins, never wider than the screen.
+            var screenWidth = 1920
+            var available = screenWidth - 32
+            var width = popupWidthForCards(6, 111.6, 4, available, 16, 540, screenWidth)
+            compare(cardsPerRow(6, 111.6, 4, available), 6)
+            compare(width, 689.6 + 32)
+            verify(width <= screenWidth)
+            // A single card on a wide screen is raised to the readable minimum.
+            compare(popupWidthForCards(1, 111.6, 4, available, 16, 540, screenWidth), 540)
+        }
+
+        function test_popup_width_wraps_and_clamps_on_narrow_screen() {
+            // A narrow screen wraps the row and the popup stays on screen instead of
+            // growing a horizontal scrollbar; the wrapped content still fits.
+            var screenWidth = 500
+            var available = screenWidth - 32
+            var width = popupWidthForCards(6, 111.6, 4, available, 16, 540, screenWidth)
+            var columns = cardsPerRow(6, 111.6, 4, available)
+            verify(columns >= 1)
+            verify(columns < 6)
+            verify(width <= screenWidth)
+            verify(!cardsRowOverflows(columns, 111.6, 4, width - 32))
+        }
+
+        function test_popup_width_clamps_below_one_card() {
+            // Blocking case: the screen is narrower than one card plus both margins.
+            // The popup clamps to the screen, the inner width stays positive, and it
+            // is smaller than one card, so the card must shrink to fit inside it.
+            var cardWidth = 111.6
+            var margin = 36
+            var screenWidth = 150
+            var available = Math.max(cardWidth, screenWidth - margin * 2)
+            var width = popupWidthForCards(1, cardWidth, 4, available, margin, 540, screenWidth)
+            compare(width, screenWidth)
+            verify(width - margin * 2 > 0)
+            verify(width - margin * 2 < cardWidth)
+            compare(cardsPerRow(1, cardWidth, 4, available), 1)
+        }
+
+        function test_card_stays_inside_narrow_popup() {
+            // The card must shrink to the popup inner width instead of keeping its
+            // preferred width and spilling past the popup edge.
+            waitForRendering(probeGrid)
+            verify(probeCard.width > 0)
+            verify(probeCard.width <= probeGrid.width + 0.001)
+        }
     }
 }
 QML
@@ -545,6 +704,11 @@ else
     grep -q 'deepseek' <<<"$(extract_function visibleEntries)" || fail 'visibleEntries() no longer hides DeepSeek in the aggregate'
     grep -q 'codex.concat(claude, rest)' <<<"$(extract_function visibleEntries)" || fail 'visibleEntries() no longer orders Claude after Codex'
     grep -q 'pool\[0\]' <<<"$(extract_function keepSelectionValid)" || fail 'keepSelectionValid() no longer snaps to a visible entry'
+    grep -q 'function cardsPerRow' "$root/contents/ui/main.qml" || fail 'cardsPerRow() was not found in contents/ui/main.qml'
+    grep -q 'function cardsRowCount' "$root/contents/ui/main.qml" || fail 'cardsRowCount() was not found in contents/ui/main.qml'
+    grep -q 'function cardsGridHeight' "$root/contents/ui/main.qml" || fail 'cardsGridHeight() was not found in contents/ui/main.qml'
+    grep -q 'function cardHeight' "$root/contents/ui/main.qml" || fail 'cardHeight() was not found in contents/ui/main.qml'
+    grep -q 'function popupWidthForCards' "$root/contents/ui/main.qml" || fail 'popupWidthForCards() was not found in contents/ui/main.qml'
 fi
 
 if "$wrapper" usage --account second >"$tmpdir/selector.out" 2>"$tmpdir/selector.err"; then fail 'no-provider account selector returned success'; fi
