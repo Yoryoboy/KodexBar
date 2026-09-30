@@ -372,6 +372,21 @@ if grep -q 'QQC2.ScrollBar.horizontal.policy: QQC2.ScrollBar.AsNeeded' "$root/co
     fail 'a horizontal ScrollView policy was reintroduced'
 fi
 
+# Explicit compact pinning: a card click must pin the compact label to the last
+# clicked provider/account card for the widget session, independently of the
+# automatic newest-activity selection. These structural checks cover the real
+# MouseArea wiring, which the extracted-function QML regressions cannot load
+# without a Plasma shell.
+assert grep -q 'property string pinnedEntryKey' "$root/contents/ui/main.qml"
+assert grep -q 'function clickEntry' "$root/contents/ui/main.qml"
+assert grep -q 'function pinnedEntry' "$root/contents/ui/main.qml"
+assert grep -q 'function clearMissingPin' "$root/contents/ui/main.qml"
+assert grep -q 'onClicked: root.clickEntry(modelData)' "$root/contents/ui/main.qml"
+assert grep -q 'clearMissingPin()' "$root/contents/ui/main.qml"
+if grep -q 'onClicked: root.selectedEntryKey = root.entryKey(modelData)' "$root/contents/ui/main.qml"; then
+    fail 'card clicks no longer pin the compact account'
+fi
+
 # NaN cloud quota rendering: the popup must prefer the helper's per-model quota
 # payload, keep the CLI token fallback, and label the period explicitly instead
 # of reusing a reset countdown that would misrepresent the quota window.
@@ -407,7 +422,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in isAggregateView visibleEntries entryKey selectedEntry keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards; do
+for name in isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity codexAccountKey codexAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -477,6 +492,7 @@ Item {
     property string selectedProvider: "detect"
     property string selectedSource: "detect"
     property string selectedEntryKey: ""
+    property string pinnedEntryKey: ""
 
     // Mirrors the card row in main.qml: a ColumnLayout constrains the card
     // GridLayout to the popup inner width, the grid may shrink below its preferred
@@ -520,10 +536,30 @@ $display_functions
             selectedProvider = "detect"
             selectedSource = "detect"
             selectedEntryKey = ""
+            pinnedEntryKey = ""
         }
 
         function entry(provider, account) {
             return { provider: provider, account: account || "", source: "cli" }
+        }
+
+        // Minimal usable entry with a used percentage, one window row, an
+        // optional account and last-activity timestamp. It mirrors the normalized
+        // shape compactEntry(), compactIdentity() and isUsableEntry() consume.
+        function usageEntry(provider, account, usedPercentValue, lastActivityAt) {
+            return {
+                provider: provider,
+                account: account || "",
+                source: "cli",
+                name: provider,
+                primaryPercentLeft: 100 - usedPercentValue,
+                secondaryPercentLeft: null,
+                creditsRemaining: null,
+                codeReviewRemainingPercent: null,
+                rows: [{ title: "5h", percentLeft: 100 - usedPercentValue }],
+                lastActivityAt: lastActivityAt || "",
+                errorMessage: ""
+            }
         }
 
         function test_aggregate_hides_deepseek_and_places_claude_fourth() {
@@ -586,6 +622,104 @@ $display_functions
             selectedEntryKey = "stale"
             keepSelectionValid()
             compare(selectedEntryKey, "")
+        }
+
+        // Explicit compact pinning: the last clicked provider/account card owns
+        // the compact label while it stays visible and usable, ahead of the
+        // automatic newest-activity default.
+        function test_no_click_defaults_to_newest_activity() {
+            entries = [usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z"),
+                usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")]
+            var picked = compactEntry()
+            compare(picked.provider, "claude")
+            compare(usedPercent(picked.primaryPercentLeft), 10)
+        }
+
+        function test_clicked_card_pins_over_newer_activity() {
+            entries = [usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z"),
+                usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")]
+            clickEntry(entries[0])
+            compare(pinnedEntryKey, entryKey(entries[0]))
+            var picked = compactEntry()
+            compare(picked.provider, "codex")
+            compare(usedPercent(picked.primaryPercentLeft), 40)
+            compare(compactIdentity(picked), "A1")
+        }
+
+        function test_next_click_replaces_pin() {
+            entries = [usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z"),
+                usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")]
+            clickEntry(entries[0])
+            compare(compactEntry().provider, "codex")
+            clickEntry(entries[1])
+            compare(pinnedEntryKey, entryKey(entries[1]))
+            var picked = compactEntry()
+            compare(picked.provider, "claude")
+            compare(usedPercent(picked.primaryPercentLeft), 10)
+        }
+
+        function test_pin_survives_refresh_and_reordering() {
+            entries = [usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z"),
+                usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")]
+            clickEntry(entries[0])
+            // The refresh reorders the cards and gives Claude newer activity.
+            entries = [usageEntry("claude", "", 10, "2026-03-01T00:00:00Z"),
+                usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z")]
+            clearMissingPin()
+            compare(pinnedEntryKey, entryKey(entries[1]))
+            var picked = compactEntry()
+            compare(picked.provider, "codex")
+            compare(compactIdentity(picked), "A1")
+        }
+
+        function test_hidden_pin_is_cleared_and_falls_back() {
+            var deepseek = usageEntry("deepseek", "", 30, "")
+            var codex = usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z")
+            entries = [deepseek, codex]
+            selectedProvider = "deepseek"
+            selectedSource = "api"
+            clickEntry(deepseek)
+            compare(compactEntry().provider, "deepseek")
+            // The aggregate view hides DeepSeek, so the pinned card is gone.
+            selectedProvider = "detect"
+            selectedSource = "detect"
+            clearMissingPin()
+            compare(pinnedEntryKey, "")
+            var picked = compactEntry()
+            compare(picked.provider, "codex")
+            verify(!picked.errorMessage)
+        }
+
+        function test_removed_pin_is_cleared_and_falls_back() {
+            entries = [usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z"),
+                usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")]
+            clickEntry(entries[0])
+            // The next refresh no longer reports the pinned account.
+            entries = [usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")]
+            clearMissingPin()
+            compare(pinnedEntryKey, "")
+            compare(compactEntry().provider, "claude")
+        }
+
+        function test_unusable_pin_falls_back_and_recovers() {
+            var broken = usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z")
+            broken.rows = []
+            broken.errorMessage = "runtime failure"
+            var claude = usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")
+            entries = [broken, claude]
+            clickEntry(broken)
+            // The pin is kept for the session, but an unusable account must never
+            // produce invalid compact output.
+            compare(pinnedEntryKey, entryKey(broken))
+            var picked = compactEntry()
+            compare(picked.provider, "claude")
+            verify(!picked.errorMessage)
+            // When the pinned account reports data again the pin is honored.
+            var recovered = usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z")
+            entries = [recovered, claude]
+            clearMissingPin()
+            compare(pinnedEntryKey, entryKey(recovered))
+            compare(compactEntry().provider, "codex")
         }
 
         function test_card_row_overflow_detection() {
@@ -709,6 +843,10 @@ else
     grep -q 'function cardsGridHeight' "$root/contents/ui/main.qml" || fail 'cardsGridHeight() was not found in contents/ui/main.qml'
     grep -q 'function cardHeight' "$root/contents/ui/main.qml" || fail 'cardHeight() was not found in contents/ui/main.qml'
     grep -q 'function popupWidthForCards' "$root/contents/ui/main.qml" || fail 'popupWidthForCards() was not found in contents/ui/main.qml'
+    grep -q 'function clickEntry' "$root/contents/ui/main.qml" || fail 'clickEntry() was not found in contents/ui/main.qml'
+    grep -q 'function pinnedEntry' "$root/contents/ui/main.qml" || fail 'pinnedEntry() was not found in contents/ui/main.qml'
+    grep -q 'function clearMissingPin' "$root/contents/ui/main.qml" || fail 'clearMissingPin() was not found in contents/ui/main.qml'
+    grep -q 'root.clickEntry(modelData)' "$root/contents/ui/main.qml" || fail 'card clicks no longer pin the compact account'
 fi
 
 if "$wrapper" usage --account second >"$tmpdir/selector.out" 2>"$tmpdir/selector.err"; then fail 'no-provider account selector returned success'; fi

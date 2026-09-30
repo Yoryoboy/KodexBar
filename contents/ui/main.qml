@@ -32,6 +32,10 @@ PlasmoidItem {
     property bool showCostSummary: Plasmoid.configuration.showCostSummary === undefined ? true : Plasmoid.configuration.showCostSummary
     property int refreshSeconds: Math.max(10, Plasmoid.configuration.refreshInterval || 60)
     property string selectedEntryKey: ""
+    // Explicit card clicks keep their own state: automatic newest-activity
+    // selection must never read as a manual choice. The pin lasts for the widget
+    // session only and is never written back to the widget configuration.
+    property string pinnedEntryKey: ""
 
     preferredRepresentation: compactRepresentation
     toolTipMainText: "KodexBar"
@@ -100,6 +104,46 @@ PlasmoidItem {
         return pool.length > 0 ? pool[0] : null
     }
 
+    // A card click moves the popup detail selection and pins the compact label to
+    // the same account. Both states move together here so a manual choice is never
+    // confused with the automatic selection keepSelectionValid() maintains.
+    function clickEntry(entry) {
+        var key = entryKey(entry)
+        if (key.length === 0) {
+            return
+        }
+        selectedEntryKey = key
+        pinnedEntryKey = key
+    }
+
+    // A pin only counts while its card is still visible. A hidden or removed card
+    // returns null so the compact label stops following it.
+    function pinnedEntry() {
+        if (pinnedEntryKey.length === 0) {
+            return null
+        }
+        var pool = visibleEntries()
+        for (var i = 0; i < pool.length; i++) {
+            if (entryKey(pool[i]) === pinnedEntryKey) {
+                return pool[i]
+            }
+        }
+        return null
+    }
+
+    // Drop a pin whose card was hidden or removed so a later refresh cannot
+    // resurrect a stale selection. A pinned account that is still visible but
+    // temporarily unusable keeps its pin: compactEntry() falls back until that
+    // account reports usable data again.
+    function clearMissingPin() {
+        if (pinnedEntryKey.length === 0) {
+            return
+        }
+        if (pinnedEntry() === null) {
+            pinnedEntryKey = ""
+        }
+    }
+
     function isUsableEntry(entry) {
         return entry && !entry.errorMessage && ((entry.rows && entry.rows.length > 0)
             || entry.creditsRemaining !== null
@@ -116,6 +160,13 @@ PlasmoidItem {
 
     function compactEntry() {
         var pool = visibleEntries()
+        // An explicit card click owns the compact label: the pinned account wins
+        // over a different account with newer activity while it stays visible and
+        // usable. Without a usable pin, the newest-activity default is unchanged.
+        var pinned = pinnedEntry()
+        if (isUsableEntry(pinned)) {
+            return pinned
+        }
         var fallback = selectedEntry()
         if (!isUsableEntry(fallback)) {
             fallback = null
@@ -1475,7 +1526,7 @@ PlasmoidItem {
 
                         MouseArea {
                             anchors.fill: parent
-                            onClicked: root.selectedEntryKey = root.entryKey(modelData)
+                            onClicked: root.clickEntry(modelData)
                             cursorShape: Qt.PointingHandCursor
                         }
                         ColumnLayout {
@@ -2025,7 +2076,10 @@ PlasmoidItem {
         onTriggered: root.refresh()
     }
 
-    onEntriesChanged: keepSelectionValid()
+    onEntriesChanged: {
+        keepSelectionValid()
+        clearMissingPin()
+    }
 
     onRefreshSecondsChanged: {
         refreshTimer.restart()
