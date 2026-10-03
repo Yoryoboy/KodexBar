@@ -35,6 +35,7 @@ elif [[ $* == *"--provider opencodego"* ]]; then
 elif [[ $* == *"--provider deepseek"* ]]; then
     if [[ ${FAKE_MODE:-normal} == unmatched ]]; then cat "$FAKE_FIXTURES/deepseek-unmatched.json"; else cat "$FAKE_FIXTURES/deepseek.json"; fi
 elif [[ $* == *"--provider claude"* ]]; then
+    [[ ${FAKE_CLAUDE_READ_STDIN:-0} != 1 ]] || cat >/dev/null
     if [[ ${FAKE_CLAUDE_CHECK:-0} == 1 ]]; then
         [[ -n ${CLAUDE_CONFIG_DIR-} ]] || { printf 'missing CLAUDE_CONFIG_DIR\n' >&2; exit 1; }
         printf '%s\n' "$CLAUDE_CONFIG_DIR" >>"$FAKE_CLAUDE_LOG"
@@ -149,7 +150,8 @@ export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
 
 # --- Claude Code subscription windows ----------------------------------------
 # Claude is an upstream CodexBar provider queried with an explicit CLI source, so the
-# wrapper reads only local identity, not credentials or sessions. The sanitized
+# wrapper reads only local identity and activity metadata, not credentials or
+# session contents. The sanitized
 # fixture carries the primary (5-hour) and secondary (weekly) windows observed from
 # `codexbar usage --provider claude --source cli --format json --json-only`.
 : >"$log"
@@ -254,6 +256,42 @@ unset FAKE_MODE
     out=$("$wrapper" usage --provider claude --source cli)
     assert_json '.provider == "claude" and .account == null' "$out"
     assert test "$(<"$log")" = 'usage --provider claude --source cli'
+) || exit 1
+
+# Per-dir Claude activity uses metadata only, with no additional upstream queries.
+(
+    export HOME=$tmpdir/claude-activity-home
+    work=$HOME/.claude-work
+    missing=$HOME/.claude-no-projects
+    mkdir -p "$HOME/.claude/projects/nested" "$work/projects/nested" "$missing"
+    export KODEXBAR_CLAUDE_CONFIG_DIRS="$work;$missing"
+    export FAKE_CLAUDE_CHECK=1 FAKE_CLAUDE_LOG=$tmpdir/claude-activity-dirs.log
+    printf '{}' >"$HOME/.claude/projects/older.jsonl"
+    printf 'SESSION_CONTENT_MARKER' >"$HOME/.claude/projects/nested/PRIVATE_FILENAME.jsonl"
+    printf '{}' >"$work/projects/nested/recent.data"
+    touch -d '2025-01-01 03:04:05 UTC' "$HOME/.claude/projects/older.jsonl"
+    touch -d '2025-01-02 03:04:05 UTC' "$HOME/.claude/projects/nested/PRIVATE_FILENAME.jsonl"
+    touch -d '2025-01-03 03:04:05 UTC' "$work/projects/nested/recent.data"
+
+    # An upstream reader must not drain the config-dir enumeration pipe.
+    export FAKE_CLAUDE_READ_STDIN=1
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json '[.[] | select(.provider == "claude") | .account] == [".claude", ".claude-work", ".claude-no-projects"]' "$out"
+    unset FAKE_CLAUDE_READ_STDIN
+
+    for mode in normal claude-array-valid; do
+        : >"$FAKE_CLAUDE_LOG"
+        out=$(FAKE_MODE=$mode "$wrapper" usage --format json --json-only)
+        assert_json '[.[] | select(.provider == "claude") | .activity] == [{lastActivityAt: "2025-01-02T03:04:05Z", source: "local"}, {lastActivityAt: "2025-01-03T03:04:05Z", source: "local"}, null]' "$out"
+        assert_json '.[] | select(.account == ".claude-no-projects") | has("activity") | not' "$out"
+        expected=$(printf '%s\n' "$HOME/.claude" "$work" "$missing")
+        assert test "$(<"$FAKE_CLAUDE_LOG")" = "$expected"
+        if [[ $out == *"$HOME"* || $out == *PRIVATE_FILENAME* || $out == *SESSION_CONTENT_MARKER* ]]; then fail 'Claude activity privacy regression'; fi
+    done
+    # An existing but empty projects directory also preserves usage without activity.
+    mkdir -p "$missing/projects"
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json '[.[] | select(.account == ".claude-no-projects")] | length == 1 and (.[0] | has("activity") | not)' "$out"
 ) || exit 1
 
 # --- NaN cloud quota helper -----------------------------------------------------------------

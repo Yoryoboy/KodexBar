@@ -33,9 +33,11 @@ resolve_command() {
 upstream=$(resolve_command) || exit 127
 
 local_activity_epoch() {
-    local home=$1 latest
-    [[ -d $home/sessions ]] || return 0
-    latest=$(find "$home/sessions" -type f -name '*.jsonl' -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1)
+    local home=$1 latest directory pattern
+    directory=$home/${2:-sessions}
+    pattern=${3:-*.jsonl}
+    [[ -d $directory && -r $directory && -x $directory ]] || return 0
+    latest=$(find "$directory" -type f -name "$pattern" -printf '%T@\n' 2>/dev/null | sort -nr | head -n 1)
     [[ -n $latest ]] || return 0
     awk -v value="$latest" 'BEGIN { printf "%.0f\n", value }'
 }
@@ -413,7 +415,7 @@ if (( has_provider == 0 )); then
         claude_output=$tmpdir/claude-$claude_index.json
         claude_index=$((claude_index + 1))
         if ! CLAUDE_CONFIG_DIR="$claude_dir" "$upstream" "${original_args[@]}" --format json --json-only \
-            --provider claude --source cli >"$claude_output" 2>"$claude_output.stderr"; then
+            --provider claude --source cli </dev/null >"$claude_output" 2>"$claude_output.stderr"; then
             continue
         fi
         claude_entry_valid "$claude_output" || continue
@@ -430,9 +432,18 @@ if (( has_provider == 0 )); then
         fi
         claude_basename=${claude_dir%/}
         claude_account=${claude_email:-${claude_basename##*/}}
-        jq --arg account "$claude_account" '
-            if type == "array" then map(.account = $account)
-            else .account = $account end' "$claude_output" >"$claude_output.enriched" \
+        # Scan only this account's project-file mtimes; never read session contents.
+        # The helper's awk can read stdin too, so isolate it from the dir loop.
+        claude_epoch=$(local_activity_epoch "$claude_dir" projects '*' </dev/null)
+        claude_activity=$(local_activity_iso "$claude_epoch")
+        jq --arg account "$claude_account" --arg activity "$claude_activity" '
+            def enrich:
+                .account = $account
+                | if $activity != "" then
+                    .activity = {lastActivityAt: $activity, source: "local"}
+                  else . end;
+            if type == "array" then map(enrich)
+            else enrich end' "$claude_output" >"$claude_output.enriched" \
             && mv "$claude_output.enriched" "$claude_output" || continue
         outputs+=("$claude_output")
         successes=$((successes + 1))
