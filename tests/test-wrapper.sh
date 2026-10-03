@@ -37,10 +37,10 @@ elif [[ $* == *"--provider deepseek"* ]]; then
 elif [[ $* == *"--provider claude"* ]]; then
     [[ ${FAKE_CLAUDE_READ_STDIN:-0} != 1 ]] || cat >/dev/null
     if [[ ${FAKE_CLAUDE_CHECK:-0} == 1 ]]; then
-        [[ -n ${CLAUDE_CONFIG_DIR-} ]] || { printf 'missing CLAUDE_CONFIG_DIR\n' >&2; exit 1; }
-        printf '%s\n' "$CLAUDE_CONFIG_DIR" >>"$FAKE_CLAUDE_LOG"
-        [[ $CLAUDE_CONFIG_DIR != "${FAKE_CLAUDE_FAIL_DIR-}" ]] || exit 1
-        [[ $CLAUDE_CONFIG_DIR != "${FAKE_CLAUDE_INVALID_DIR-}" ]] || { printf '{}\n'; exit 0; }
+        printf '%s\n' "${CLAUDE_CONFIG_DIR-UNSET}" >>"$FAKE_CLAUDE_LOG"
+        effective_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+        [[ $effective_dir != "${FAKE_CLAUDE_FAIL_DIR-}" ]] || exit 1
+        [[ $effective_dir != "${FAKE_CLAUDE_INVALID_DIR-}" ]] || { printf '{}\n'; exit 0; }
     fi
     case ${FAKE_MODE:-normal} in
         claude-missing) exit 0 ;;
@@ -212,7 +212,7 @@ unset FAKE_MODE
     : >"$FAKE_CLAUDE_LOG"
     out=$("$wrapper" usage --format json --json-only)
     assert_json 'map(.provider) == ["codex", "codex", "opencodego", "deepseek", "claude", "claude"] and ([.[] | select(.provider == "claude") | .account] == ["personal@example.com", "work@example.com"])' "$out"
-    expected=$(printf '%s\n' "$HOME/.claude" "$work")
+    expected=$(printf '%s\n' UNSET "$work")
     assert test "$(<"$FAKE_CLAUDE_LOG")" = "$expected"
     if [[ $out == *PRIVATE_MARKER* || $out == *personal-id* || $out == *"$HOME"* ]]; then fail 'Claude identity privacy regression'; fi
     out=$(KODEXBAR_NAN_COMMAND="$fake_nan" "$wrapper" usage --format json --json-only)
@@ -225,7 +225,7 @@ unset FAKE_MODE
     expected=$(jq -s . "$fixtures/claude.json")
     actual=$(jq '[.[] | select(.provider == "claude") | del(.account)]' <<<"$out")
     assert test "$actual" = "$expected"
-    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$HOME/.claude"
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = UNSET
 
     export KODEXBAR_CLAUDE_CONFIG_DIRS="$duplicate;$fallback"
     out=$("$wrapper" usage --format json --json-only)
@@ -246,16 +246,61 @@ unset FAKE_MODE
     # Explicit config uses the identity inside that dir, including ~/.claude.
     export CLAUDE_CONFIG_DIR=$HOME/.claude
     unset KODEXBAR_CLAUDE_CONFIG_DIRS
+    : >"$FAKE_CLAUDE_LOG"
     out=$("$wrapper" usage --format json --json-only)
     assert_json '[.[] | select(.provider == "claude") | .account] == ["wrong@example.com"]' "$out"
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$HOME/.claude"
     export CLAUDE_CONFIG_DIR=$work
+    : >"$FAKE_CLAUDE_LOG"
     out=$("$wrapper" usage --format json --json-only)
     assert_json '[.[] | select(.provider == "claude") | .account] == ["work@example.com"]' "$out"
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$work"
     export KODEXBAR_CLAUDE_CONFIG_DIRS="$fallback"
+    : >"$FAKE_CLAUDE_LOG"
+    out=$("$wrapper" usage --format json --json-only)
+    expected=$(printf '%s\n' "$work" "$fallback")
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$expected"
     : >"$log"
     out=$("$wrapper" usage --provider claude --source cli)
     assert_json '.provider == "claude" and .account == null' "$out"
     assert test "$(<"$log")" = 'usage --provider claude --source cli'
+) || exit 1
+
+# Claude's silent local-cache fallback exposes only its timestamp, per state file.
+(
+    export HOME=$tmpdir/claude-cache-home
+    work=$HOME/.claude-work
+    mkdir -p "$HOME/.claude" "$work"
+    export KODEXBAR_CLAUDE_CONFIG_DIRS="$work"
+    stale=$(($(date +%s) - 3600))
+    stale_iso=$(date -u -d "@$stale" '+%Y-%m-%dT%H:%M:%SZ')
+    # The implicit default must not read the alternate state inside ~/.claude.
+    printf '{"cachedUsageUtilization":{"fetchedAtMs":0}}\n' >"$HOME/.claude/.claude.json"
+    for mode in normal claude-array-valid; do
+        jq -n --argjson ms "$((stale * 1000))" '{cachedUsageUtilization:{fetchedAtMs:$ms, private:"CACHE_PRIVATE_MARKER"}}' >"$HOME/.claude.json"
+        printf '{"cachedUsageUtilization":{"fetchedAtMs":"invalid"}}\n' >"$work/.claude.json"
+        out=$(FAKE_MODE=$mode "$wrapper" usage --format json --json-only)
+        actual=$(jq -r '.[] | select(.account == ".claude") | .usage.cachedAt, .usage.updatedAt' <<<"$out")
+        expected=$(printf '%s\n' "$stale_iso" "$stale_iso")
+        assert test "$actual" = "$expected"
+        assert_json '.[] | select(.account == ".claude-work") | .usage | has("cachedAt") | not' "$out"
+        if [[ $out == *CACHE_PRIVATE_MARKER* ]]; then fail 'Claude cache fields leaked'; fi
+
+        for state in "{\"cachedUsageUtilization\":{\"fetchedAtMs\":$(($(date +%s) * 1000))}}" '{}' '{"cachedUsageUtilization":{"fetchedAtMs":"123"}}' '{"cachedUsageUtilization":{"fetchedAtMs":null}}' 'not json'; do
+            printf '%s\n' "$state" >"$HOME/.claude.json"
+            out=$(FAKE_MODE=$mode "$wrapper" usage --format json --json-only)
+            expected=$(FAKE_MODE=$mode "$fake" usage --provider claude | jq 'if type == "array" then .[0].usage else .usage end')
+            actual=$(jq '.[] | select(.account == ".claude") | .usage' <<<"$out")
+            assert test "$actual" = "$expected"
+        done
+    done
+    # Explicit default and extras use their own state, not the implicit state.
+    export CLAUDE_CONFIG_DIR=$HOME/.claude
+    jq -n --argjson ms "$((stale * 1000))" '{cachedUsageUtilization:{fetchedAtMs:$ms}}' >"$work/.claude.json"
+    out=$("$wrapper" usage --format json --json-only)
+    actual=$(jq -r '.[] | select(.account == ".claude-work") | .usage.cachedAt' <<<"$out")
+    assert test "$actual" = "$stale_iso"
+    assert_json '.[] | select(.account == ".claude") | .usage.cachedAt == "1970-01-01T00:00:00Z" and .usage.updatedAt == .usage.cachedAt' "$out"
 ) || exit 1
 
 # Per-dir Claude activity uses metadata only, with no additional upstream queries.
@@ -284,7 +329,7 @@ unset FAKE_MODE
         out=$(FAKE_MODE=$mode "$wrapper" usage --format json --json-only)
         assert_json '[.[] | select(.provider == "claude") | .activity] == [{lastActivityAt: "2025-01-02T03:04:05Z", source: "local"}, {lastActivityAt: "2025-01-03T03:04:05Z", source: "local"}, null]' "$out"
         assert_json '.[] | select(.account == ".claude-no-projects") | has("activity") | not' "$out"
-        expected=$(printf '%s\n' "$HOME/.claude" "$work" "$missing")
+        expected=$(printf '%s\n' UNSET "$work" "$missing")
         assert test "$(<"$FAKE_CLAUDE_LOG")" = "$expected"
         if [[ $out == *"$HOME"* || $out == *PRIVATE_FILENAME* || $out == *SESSION_CONTENT_MARKER* ]]; then fail 'Claude activity privacy regression'; fi
     done
