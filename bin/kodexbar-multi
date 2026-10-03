@@ -414,15 +414,31 @@ if (( has_provider == 0 )); then
     while IFS= read -r claude_dir; do
         claude_output=$tmpdir/claude-$claude_index.json
         claude_index=$((claude_index + 1))
-        if ! CLAUDE_CONFIG_DIR="$claude_dir" "$upstream" "${original_args[@]}" --format json --json-only \
-            --provider claude --source cli </dev/null >"$claude_output" 2>"$claude_output.stderr"; then
-            continue
-        fi
-        claude_entry_valid "$claude_output" || continue
         claude_identity=$claude_dir/.claude.json
         if [[ ! ${CLAUDE_CONFIG_DIR+x} && $claude_dir == "$HOME/.claude" ]]; then
             claude_identity=$HOME/.claude.json
         fi
+        claude_query_start=$(date +%s)
+        if ! (
+            # Setting the implicit default changes Claude's state-file location.
+            if [[ $claude_identity == "$HOME/.claude.json" ]]; then
+                unset CLAUDE_CONFIG_DIR
+            else
+                export CLAUDE_CONFIG_DIR="$claude_dir"
+            fi
+            "$upstream" "${original_args[@]}" --format json --json-only --provider claude --source cli
+        ) </dev/null >"$claude_output" 2>"$claude_output.stderr"; then
+            continue
+        fi
+        claude_entry_valid "$claude_output" || continue
+        # Claude silently returns cached usage on rate limits. Read only the cache
+        # timestamp; a missing/malformed state or timestamp never invalidates usage.
+        claude_cached_at=$(jq -r --argjson start "$claude_query_start" '
+            try (.cachedUsageUtilization.fetchedAtMs
+                | select(type == "number") | . / 1000
+                | select($start - . > 60)
+                | floor | strftime("%Y-%m-%dT%H:%M:%SZ")) catch empty
+            ' "$claude_identity" 2>/dev/null) || claude_cached_at=""
         # Missing, malformed or off-shape identity never invalidates usage.
         claude_email=$(jq -r '.oauthAccount.emailAddress | select(type == "string" and length > 0)' "$claude_identity" 2>/dev/null) || claude_email=""
         claude_uuid=$(jq -r '.oauthAccount.accountUuid | select(type == "string" and length > 0)' "$claude_identity" 2>/dev/null) || claude_uuid=""
@@ -436,11 +452,14 @@ if (( has_provider == 0 )); then
         # The helper's awk can read stdin too, so isolate it from the dir loop.
         claude_epoch=$(local_activity_epoch "$claude_dir" projects '*' </dev/null)
         claude_activity=$(local_activity_iso "$claude_epoch")
-        jq --arg account "$claude_account" --arg activity "$claude_activity" '
+        jq --arg account "$claude_account" --arg activity "$claude_activity" --arg cachedAt "$claude_cached_at" '
             def enrich:
                 .account = $account
-                | if $activity != "" then
+                | (if $activity != "" then
                     .activity = {lastActivityAt: $activity, source: "local"}
+                  else . end)
+                | if $cachedAt != "" then
+                    .usage.cachedAt = $cachedAt | .usage.updatedAt = $cachedAt
                   else . end;
             if type == "array" then map(enrich)
             else enrich end' "$claude_output" >"$claude_output.enriched" \
