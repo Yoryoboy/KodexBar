@@ -15,7 +15,7 @@
       <default>detect</default>
     </entry>
     <entry name="refreshInterval" type="Int">
-      <default>60</default>
+      <default>300</default>
       <min>10</min>
       <max>3600</max>
     </entry>
