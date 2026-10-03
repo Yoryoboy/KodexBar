@@ -334,7 +334,39 @@ PlasmoidItem {
         return rowCount * cardHeight + (rowCount - 1) * spacing
     }
 
-    // One card reserves an icon, a name line, an optional account line and one
+    // The optional email line and the cached-time line are separate, so a stale
+    // card still shows which account it is. Reserve the cached line across the
+    // grid whenever any visible card needs it.
+    function cardSecondaryLines(cards, showEmail) {
+        var lines = showEmail ? 1 : 0
+        for (var i = 0; i < cards.length; i++) {
+            if (cachedLabel(cards[i]).length > 0) {
+                return lines + 1
+            }
+        }
+        return lines
+    }
+
+    function cachedLabel(entry) {
+        if (!entry || !entry.cachedAt) {
+            return ""
+        }
+        var date = new Date(entry.cachedAt)
+        return isNaN(date.getTime()) ? ""
+            : i18n("Cached %1", date.toLocaleTimeString(Qt.locale(), Locale.ShortFormat))
+    }
+
+    function cachedDetailLabel(entry) {
+        if (!entry || !entry.cachedAt) {
+            return ""
+        }
+        var date = new Date(entry.cachedAt)
+        return isNaN(date.getTime()) ? ""
+            : i18n("Cached since %1 — Claude usage endpoint rate limited",
+                date.toLocaleString(Qt.locale(), Locale.ShortFormat))
+    }
+
+    // One card reserves an icon, a name line, an optional secondary line and one
     // value line per usage row. Keeping it pure lets the "tallest card covers every
     // OpenCode window" contract be exercised without a Plasma shell.
     function cardHeight(iconSize, fontPixelSize, rowCount, accountLines, spacing) {
@@ -1336,6 +1368,7 @@ PlasmoidItem {
             additionalRows: providerKey === "deepseek" ? [] : additionalRows,
             providerCostRow: costRow,
             updatedAt: usage.updatedAt || entry.updatedAt || "",
+            cachedAt: usage.cachedAt || "",
             lastActivityAt: entry.activity && typeof entry.activity === "object" ? entry.activity.lastActivityAt || "" : "",
             status: entry.status,
             statusIndicator: status ? (status.indicator || "unknown") : "",
@@ -1461,7 +1494,8 @@ PlasmoidItem {
             return rows
         }
         readonly property int accountCardHeight: root.cardHeight(Kirigami.Units.iconSizes.small,
-            Kirigami.Theme.defaultFont.pixelSize, maxCardRows, root.showEmailInWidget ? 1 : 0,
+            Kirigami.Theme.defaultFont.pixelSize, maxCardRows,
+            root.cardSecondaryLines(root.visibleEntries(), root.showEmailInWidget),
             Kirigami.Units.smallSpacing)
 
         // The card row has no horizontal scrollbar. The popup width follows the
@@ -1557,6 +1591,15 @@ PlasmoidItem {
                                 visible: text.length > 0
                                 horizontalAlignment: Text.AlignHCenter
                                 color: Kirigami.Theme.disabledTextColor
+                                font.pointSize: Kirigami.Theme.smallFont.pointSize
+                                elide: Text.ElideRight
+                                Layout.fillWidth: true
+                            }
+                            PlasmaComponents.Label {
+                                text: root.cachedLabel(modelData)
+                                visible: text.length > 0
+                                horizontalAlignment: Text.AlignHCenter
+                                color: Kirigami.Theme.neutralTextColor
                                 font.pointSize: Kirigami.Theme.smallFont.pointSize
                                 elide: Text.ElideRight
                                 Layout.fillWidth: true
@@ -1660,6 +1703,14 @@ PlasmoidItem {
                                         Layout.fillWidth: true
                                     }
                                 }
+                            }
+
+                            PlasmaComponents.Label {
+                                text: root.cachedDetailLabel(modelData)
+                                visible: text.length > 0
+                                color: Kirigami.Theme.neutralTextColor
+                                wrapMode: Text.WordWrap
+                                Layout.fillWidth: true
                             }
 
                             Flow {

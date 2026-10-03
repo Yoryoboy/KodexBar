@@ -577,7 +577,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards; do
+for name in isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -682,6 +682,11 @@ Item {
         }
     }
 
+    // Plasma supplies i18n at runtime; preserve its placeholder contract here.
+    function i18n(text, value) {
+        return value === undefined ? text : text.replace("%1", String(value))
+    }
+
 $display_functions
     TestCase {
         name: "aggregateCardDisplay"
@@ -715,6 +720,44 @@ $display_functions
                 lastActivityAt: lastActivityAt || "",
                 errorMessage: ""
             }
+        }
+
+        function test_cached_labels_use_local_time_for_any_provider() {
+            var timestamp = "2026-10-03T12:50:12Z"
+            var cached = { provider: "codex", cachedAt: timestamp }
+            var localTime = new Date(timestamp).toLocaleTimeString(Qt.locale(), Locale.ShortFormat)
+            compare(cachedLabel(cached), "Cached " + localTime)
+            compare(cachedDetailLabel(cached), "Cached since "
+                + new Date(timestamp).toLocaleString(Qt.locale(), Locale.ShortFormat)
+                + " — Claude usage endpoint rate limited")
+        }
+
+        function test_uncached_and_invalid_entries_have_no_label() {
+            compare(cachedLabel({}), "")
+            compare(cachedLabel(null), "")
+            compare(cachedDetailLabel({ cachedAt: "" }), "")
+            compare(cachedLabel({ cachedAt: "invalid" }), "")
+            compare(cachedDetailLabel({ cachedAt: "invalid" }), "")
+        }
+
+        function test_normalization_preserves_usage_cache_timestamp() {
+            var timestamp = "2026-10-03T12:50:12Z"
+            compare(normalizeEntry({ provider: "claude", usage: { cachedAt: timestamp } }).cachedAt, timestamp)
+            compare(normalizeEntry({ provider: "codex", usage: { cachedAt: timestamp } }).cachedAt, timestamp)
+            compare(normalizeEntry({ provider: "claude" }).cachedAt, "")
+            compare(normalizeEntry({ provider: "claude", cachedAt: timestamp }).cachedAt, "")
+        }
+
+        // The cached time gets its own line so the email that tells Claude
+        // accounts apart stays visible exactly when the data is stale.
+        function test_cached_line_keeps_the_email_line() {
+            var cached = { cachedAt: "2026-10-03T12:50:12Z" }
+            compare(cardSecondaryLines([{}], false), 0)
+            compare(cardSecondaryLines([{}], true), 1)
+            compare(cardSecondaryLines([{}, cached], false), 1)
+            compare(cardSecondaryLines([cached], true), 2)
+            compare(cardHeight(16, 15, 3, cardSecondaryLines([cached], false), 4)
+                - cardHeight(16, 15, 3, 0, 4), 19)
         }
 
         function test_aggregate_hides_deepseek_and_places_claude_fourth() {
@@ -1041,6 +1084,13 @@ else
     grep -q 'function clearMissingPin' "$root/contents/ui/main.qml" || fail 'clearMissingPin() was not found in contents/ui/main.qml'
     grep -q 'root.clickEntry(modelData)' "$root/contents/ui/main.qml" || fail 'card clicks no longer pin the compact account'
 fi
+
+# Only the refreshInterval entry should carry the new default.
+refresh_config=$(awk '/<entry name="refreshInterval"/{capture=1} capture{print} capture && /<\/entry>/{exit}' "$root/contents/config/main.xml")
+grep -q '<default>300</default>' <<<"$refresh_config" || fail 'refresh interval default is not 300 seconds'
+assert grep -q 'root.cachedLabel(modelData)' "$root/contents/ui/main.qml"
+assert grep -q 'root.cachedDetailLabel(modelData)' "$root/contents/ui/main.qml"
+assert grep -q 'root.cardSecondaryLines(root.visibleEntries(), root.showEmailInWidget)' "$root/contents/ui/main.qml"
 
 if "$wrapper" usage --account second >"$tmpdir/selector.out" 2>"$tmpdir/selector.err"; then fail 'no-provider account selector returned success'; fi
 assert grep -q 'account selection requires --provider codex' "$tmpdir/selector.err"

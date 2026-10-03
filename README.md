@@ -75,6 +75,8 @@ For the current DeepSeek payload shape, the wrapper defensively converts `usage.
 
 Claude Code subscription usage is read through the upstream CLI with an explicit `--provider claude --source cli` query. The CLI source matches the installed Claude Code login and avoids the `auto` path, which prefers the claude.ai API and was observed to time out. Each query requires an existing Claude Code login (`claude /login`); the wrapper reads local account identity and the cache timestamp only, never credentials, cookies, or session files. The primary (5-hour) and secondary (weekly) rate-limit windows are passed through as reported, including `usedPercent`, `windowMinutes`, `resetsAt`, and `resetDescription`, and the popup renders both without provider-specific handling. A missing, failed, or malformed Claude response is omitted silently and never removes the other providers.
 
+When cached usage is returned after a rate limit, the card shows `Cached <local time>` on its own line below the email, so a stale card still identifies its account. The detail panel shows `Cached since <local date-time> — Claude usage endpoint rate limited`; the footer's update time still refers to the widget fetch, not the cached value.
+
 For multiple Claude accounts, the aggregate queries `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` first, then the semicolon-separated directories in `KODEXBAR_CLAUDE_CONFIG_DIRS`, in listed order. Empty entries, repeated paths, and non-existent extra directories are skipped; leading `~` or `~/` expands to your home directory. To add an account:
 
 ```sh
@@ -153,7 +155,7 @@ KodexBar exposes these Plasma widget settings:
 | Command | `codexbar` binary name or full path. New installs use `kodexbar-multi`; existing stored commands are unchanged. |
 | Provider | `Best available`, `All enabled`, or a specific CodexBar provider ID. |
 | Source | `Best available`, `auto`, `web`, `cli`, `oauth`, or `api`. |
-| Refresh | Poll interval, from 10 to 3600 seconds. |
+| Refresh | Poll interval, from 10 to 3600 seconds; default 300 s. |
 | Show provider in panel | Include the reduced provider/account identity, such as `A<n>` for Codex or `C<n>` for Claude accounts, in the compact label. |
 | Show used percent in panel | Include both 5-hour and weekly used percentages when available. |
 | Show credits in panel | Include remaining credits only when a positive numeric balance is available. |
