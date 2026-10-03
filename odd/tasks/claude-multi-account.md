@@ -26,3 +26,10 @@ Show one Claude card per configured Claude Code account, mirroring the Codex mul
 
 ## Progress and verification
 - All three tasks committed on `feature/claude-multi-account` (`02231b7`, `4f83ec9`, `1fc34f7`), each with its own approved and acknowledged native review. Not yet installed locally or verified live with a second Claude account. Push and PR remain unauthorized.
+- Live verification: `./install.sh` succeeded (installed wrapper and QML byte-match the branch; prior wrapper backed up to `~/.local/bin/kodexbar-multi.backup.20261003123744`). Second account logged in under `~/.claude-work`. `KODEXBAR_CLAUDE_CONFIG_DIRS=/home/yoryo/.claude-work` is set in `~/.config/environment.d/kodexbar.conf` and in the systemd user environment; the restarted `plasmashell` inherits it. The user confirmed two Claude cards whose usage matches each account in Claude itself. The user chose to keep the stray `KODEXBAR_NAN_COMMAND`/`KODEXBAR_NAN_QUOTA_COMMAND=/nonexistent/...` systemd variables, so the NaN card stays hidden.
+- Incident found live: both cards first showed identical usage because `~/.claude/.credentials.json` held the second account's token while `~/.claude.json` still named the first account. Re-logging into the main account fixed it. The earlier metadata check (distinct tokens, emails, and UUIDs) wrongly concluded the accounts were distinct; it never tied the label to the token actually used.
+
+## Pending
+- [ ] P1 — Identity drift: the card label comes from `.claude.json` (`oauthAccount`), but usage is fetched with the token in `.credentials.json`. If the two disagree, the card shows the wrong email silently, and `accountUuid` dedupe cannot catch it. Derive identity from the same source as the usage query (e.g., what `claude` reports for its active session) or detect the mismatch and degrade the label.
+- [ ] P2 — Non-blocking review follow-ups: sequential per-dir latency, dedupe only after querying, symlinked `projects`, untested accountless Claude fallback and unreadable `projects` dir, detached test comment.
+- [ ] P3 — Optional widget settings field for Claude config dirs (deferred decision).
