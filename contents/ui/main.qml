@@ -192,7 +192,7 @@ PlasmoidItem {
         return newest || fallback || (pool.length > 0 ? pool[0] : null)
     }
 
-    function codexAccountKey(entry) {
+    function providerAccountKey(entry) {
         if (!entry) {
             return ""
         }
@@ -200,25 +200,28 @@ PlasmoidItem {
         return account.length > 0 ? account : entryKey(entry)
     }
 
-    function codexAccountNumber(entry) {
+    function providerAccountNumber(entry, provider) {
         var keys = []
         for (var i = 0; i < entries.length; i++) {
-            if (String(entries[i].provider || "").toLowerCase() === "codex") {
-                var key = codexAccountKey(entries[i])
+            if (String(entries[i].provider || "").toLowerCase() === provider) {
+                var key = providerAccountKey(entries[i])
                 if (keys.indexOf(key) === -1) {
                     keys.push(key)
                 }
             }
         }
         keys.sort()
-        var ordinal = keys.indexOf(codexAccountKey(entry))
+        var ordinal = keys.indexOf(providerAccountKey(entry))
         return ordinal >= 0 ? ordinal + 1 : 0
     }
 
     function compactIdentity(entry) {
         var provider = String(entry && entry.provider || "").toLowerCase()
         if (provider === "codex") {
-            return "A" + codexAccountNumber(entry)
+            return "A" + providerAccountNumber(entry, provider)
+        }
+        if (provider === "claude") {
+            return "C" + providerAccountNumber(entry, provider)
         }
         if (provider === "opencode" || provider === "opencodego") {
             return "OpenCode"

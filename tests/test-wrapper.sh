@@ -445,7 +445,7 @@ out=$("$wrapper" usage --format json --json-only)
 assert_json 'all(.[]; (.activity == null) or (.provider != "opencodego"))' "$out"
 unset KODEXBAR_CODEX_ACCOUNT_HOMES XDG_DATA_HOME
 
-assert grep -q 'function codexAccountKey' "$root/contents/ui/main.qml"
+assert grep -q 'function providerAccountKey' "$root/contents/ui/main.qml"
 assert grep -q 'keys.sort()' "$root/contents/ui/main.qml"
 assert grep -q 'entry.creditsRemaining > 0' "$root/contents/ui/main.qml"
 
@@ -532,7 +532,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity codexAccountKey codexAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards; do
+for name in isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -737,6 +737,39 @@ $display_functions
         // Explicit compact pinning: the last clicked provider/account card owns
         // the compact label while it stays visible and usable, ahead of the
         // automatic newest-activity default.
+        function test_claude_accounts_use_sorted_distinct_numbering() {
+            entries = [entry("claude", "z@example.com"), entry("claude", "a@example.com"),
+                entry("claude", "a@example.com")]
+            compare(compactIdentity(entries[0]), "C2")
+            compare(compactIdentity(entries[1]), "C1")
+            compare(compactIdentity(entries[2]), "C1")
+            entries = [entries[1], entries[0]]
+            compare(compactIdentity(entries[0]), "C1")
+            compare(compactIdentity(entries[1]), "C2")
+        }
+
+        function test_account_numbering_is_provider_scoped() {
+            entries = [entry("codex", "a"), entry("codex", "b"), entry("codex", "c"),
+                entry("claude", "z"), entry("claude", "b")]
+            compare(compactIdentity(entries[3]), "C2")
+            compare(compactIdentity(entries[4]), "C1")
+            compare(compactIdentity(entries[0]), "A1")
+            compare(compactIdentity(entries[1]), "A2")
+            compare(compactIdentity(entries[2]), "A3")
+        }
+
+        function test_single_claude_account_uses_c1() {
+            entries = [usageEntry("claude", "solo@example.com", 10, "")]
+            compare(compactIdentity(entries[0]), "C1")
+        }
+
+        function test_other_provider_identities_are_unchanged() {
+            compare(compactIdentity(entry("opencode")), "OpenCode")
+            compare(compactIdentity(entry("opencodego")), "OpenCode")
+            compare(compactIdentity(entry("nan")), "NaN")
+            compare(compactIdentity({ provider: "deepseek", name: "DeepSeek" }), "DeepSeek")
+        }
+
         function test_no_click_defaults_to_newest_activity() {
             entries = [usageEntry("codex", "a", 40, "2026-01-01T00:00:00Z"),
                 usageEntry("claude", "", 10, "2026-02-01T00:00:00Z")]
@@ -948,6 +981,11 @@ else
     grep -q 'deepseek' <<<"$(extract_function visibleEntries)" || fail 'visibleEntries() no longer hides DeepSeek in the aggregate'
     grep -q 'codex.concat(claude, rest)' <<<"$(extract_function visibleEntries)" || fail 'visibleEntries() no longer orders Claude after Codex'
     grep -q 'pool\[0\]' <<<"$(extract_function keepSelectionValid)" || fail 'keepSelectionValid() no longer snaps to a visible entry'
+    grep -q 'return "C" + providerAccountNumber(entry, provider)' <<<"$(extract_function compactIdentity)" || fail 'Claude compact identity no longer uses account numbering'
+    grep -q 'return "A" + providerAccountNumber(entry, provider)' <<<"$(extract_function compactIdentity)" || fail 'Codex compact identity no longer uses account numbering'
+    grep -q 'toLowerCase() === provider' <<<"$(extract_function providerAccountNumber)" || fail 'account numbering is no longer provider-scoped'
+    grep -q 'keys.sort()' <<<"$(extract_function providerAccountNumber)" || fail 'account numbering is no longer sorted'
+    grep -q 'keys.indexOf(key) === -1' <<<"$(extract_function providerAccountNumber)" || fail 'account numbering no longer deduplicates account keys'
     grep -q 'function cardsPerRow' "$root/contents/ui/main.qml" || fail 'cardsPerRow() was not found in contents/ui/main.qml'
     grep -q 'function cardsRowCount' "$root/contents/ui/main.qml" || fail 'cardsRowCount() was not found in contents/ui/main.qml'
     grep -q 'function cardsGridHeight' "$root/contents/ui/main.qml" || fail 'cardsGridHeight() was not found in contents/ui/main.qml'
