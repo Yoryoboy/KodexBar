@@ -9,6 +9,10 @@ tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/kodexbar-wrapper-test.XXXXXX")
 trap 'rm -rf "$tmpdir"' EXIT HUP INT TERM
 fake=$tmpdir/codexbar
 log=$tmpdir/args.log
+# Isolate identity reads from the host and inherited account configuration.
+export HOME=$tmpdir/home
+mkdir -p "$HOME/.claude"
+unset CLAUDE_CONFIG_DIR KODEXBAR_CLAUDE_CONFIG_DIRS
 cat >"$fake" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_LOG"
@@ -31,6 +35,12 @@ elif [[ $* == *"--provider opencodego"* ]]; then
 elif [[ $* == *"--provider deepseek"* ]]; then
     if [[ ${FAKE_MODE:-normal} == unmatched ]]; then cat "$FAKE_FIXTURES/deepseek-unmatched.json"; else cat "$FAKE_FIXTURES/deepseek.json"; fi
 elif [[ $* == *"--provider claude"* ]]; then
+    if [[ ${FAKE_CLAUDE_CHECK:-0} == 1 ]]; then
+        [[ -n ${CLAUDE_CONFIG_DIR-} ]] || { printf 'missing CLAUDE_CONFIG_DIR\n' >&2; exit 1; }
+        printf '%s\n' "$CLAUDE_CONFIG_DIR" >>"$FAKE_CLAUDE_LOG"
+        [[ $CLAUDE_CONFIG_DIR != "${FAKE_CLAUDE_FAIL_DIR-}" ]] || exit 1
+        [[ $CLAUDE_CONFIG_DIR != "${FAKE_CLAUDE_INVALID_DIR-}" ]] || { printf '{}\n'; exit 0; }
+    fi
     case ${FAKE_MODE:-normal} in
         claude-missing) exit 0 ;;
         claude-fail) exit 1 ;;
@@ -139,7 +149,7 @@ export KODEXBAR_NAN_COMMAND=$tmpdir/no-nan
 
 # --- Claude Code subscription windows ----------------------------------------
 # Claude is an upstream CodexBar provider queried with an explicit CLI source, so the
-# wrapper never reads a Claude credential or session file itself. The sanitized
+# wrapper reads only local identity, not credentials or sessions. The sanitized
 # fixture carries the primary (5-hour) and secondary (weekly) windows observed from
 # `codexbar usage --provider claude --source cli --format json --json-only`.
 : >"$log"
@@ -183,6 +193,68 @@ export FAKE_MODE=claude-array-mixed
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'length == 4 and all(.[]; .provider != "claude") and any(.[]; .provider == "deepseek")' "$out"
 unset FAKE_MODE
+
+# Multi-account Claude: sanitized identities and a stub that checks the per-dir env.
+(
+    export FAKE_CLAUDE_CHECK=1 FAKE_CLAUDE_LOG=$tmpdir/claude-dirs.log
+    export HOME=$tmpdir/claude-home
+    work=$HOME/.claude-work
+    fallback=$HOME/.claude-missing
+    duplicate=$HOME/.claude-copy
+    mkdir -p "$HOME/.claude" "$work" "$fallback" "$duplicate"
+    printf '%s\n' '{"oauthAccount":{"emailAddress":"personal@example.com","accountUuid":"personal-id","other":"PRIVATE_MARKER"}}' >"$HOME/.claude.json"
+    printf '%s\n' '{"oauthAccount":{"emailAddress":"wrong@example.com"}}' >"$HOME/.claude/.claude.json"
+    printf '%s\n' '{"oauthAccount":{"emailAddress":"work@example.com","accountUuid":"work-id"}}' >"$work/.claude.json"
+    printf '%s\n' '{"oauthAccount":{"emailAddress":"copy@example.com","accountUuid":"personal-id"}}' >"$duplicate/.claude.json"
+    export KODEXBAR_CLAUDE_CONFIG_DIRS=";~/.claude-work;;$work;$HOME/absent;~/.claude;"
+    : >"$FAKE_CLAUDE_LOG"
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json 'map(.provider) == ["codex", "codex", "opencodego", "deepseek", "claude", "claude"] and ([.[] | select(.provider == "claude") | .account] == ["personal@example.com", "work@example.com"])' "$out"
+    expected=$(printf '%s\n' "$HOME/.claude" "$work")
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$expected"
+    if [[ $out == *PRIVATE_MARKER* || $out == *personal-id* || $out == *"$HOME"* ]]; then fail 'Claude identity privacy regression'; fi
+    out=$(KODEXBAR_NAN_COMMAND="$fake_nan" "$wrapper" usage --format json --json-only)
+    assert_json 'map(.provider) == ["codex", "codex", "nan", "opencodego", "deepseek", "claude", "claude"]' "$out"
+
+    unset KODEXBAR_CLAUDE_CONFIG_DIRS
+    : >"$FAKE_CLAUDE_LOG"
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json '[.[] | select(.provider == "claude")] | length == 1 and .[0].account == "personal@example.com"' "$out"
+    expected=$(jq -s . "$fixtures/claude.json")
+    actual=$(jq '[.[] | select(.provider == "claude") | del(.account)]' <<<"$out")
+    assert test "$actual" = "$expected"
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$HOME/.claude"
+
+    export KODEXBAR_CLAUDE_CONFIG_DIRS="$duplicate;$fallback"
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json '[.[] | select(.provider == "claude") | .account] == ["personal@example.com", ".claude-missing"]' "$out"
+    for identity in 'not json' '{"oauthAccount":{"emailAddress":42}}' '{"oauthAccount":{"emailAddress":""}}'; do
+        printf '%s\n' "$identity" >"$fallback/.claude.json"
+        out=$("$wrapper" usage --format json --json-only)
+        assert_json '[.[] | select(.provider == "claude") | .account] == ["personal@example.com", ".claude-missing"]' "$out"
+    done
+
+    export KODEXBAR_CLAUDE_CONFIG_DIRS="$work"
+    for failure in FAKE_CLAUDE_FAIL_DIR FAKE_CLAUDE_INVALID_DIR; do
+        export "$failure=$HOME/.claude"
+        out=$("$wrapper" usage --format json --json-only)
+        assert_json 'length == 5 and ([.[] | select(.provider == "claude") | .account] == ["work@example.com"]) and any(.[]; .provider == "deepseek")' "$out"
+        unset "$failure"
+    done
+    # Explicit config uses the identity inside that dir, including ~/.claude.
+    export CLAUDE_CONFIG_DIR=$HOME/.claude
+    unset KODEXBAR_CLAUDE_CONFIG_DIRS
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json '[.[] | select(.provider == "claude") | .account] == ["wrong@example.com"]' "$out"
+    export CLAUDE_CONFIG_DIR=$work
+    out=$("$wrapper" usage --format json --json-only)
+    assert_json '[.[] | select(.provider == "claude") | .account] == ["work@example.com"]' "$out"
+    export KODEXBAR_CLAUDE_CONFIG_DIRS="$fallback"
+    : >"$log"
+    out=$("$wrapper" usage --provider claude --source cli)
+    assert_json '.provider == "claude" and .account == null' "$out"
+    assert test "$(<"$log")" = 'usage --provider claude --source cli'
+) || exit 1
 
 # --- NaN cloud quota helper -----------------------------------------------------------------
 # The helper is always mocked: no test reads a live Chrome cookie, KWallet entry, or network.

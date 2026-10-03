@@ -302,6 +302,23 @@ claude_entry_valid() {
     ' "$1" >/dev/null 2>&1
 }
 
+claude_config_dirs() {
+    local dir default_dir=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+    local -A seen=()
+    printf '%s\n' "$default_dir"
+    seen["$default_dir"]=1
+    while IFS= read -r dir; do
+        [[ -n $dir ]] || continue
+        case $dir in
+            '~') dir=$HOME ;;
+            '~/'*) dir=$HOME/${dir:2} ;;
+        esac
+        [[ -d $dir && ! ${seen["$dir"]+present} ]] || continue
+        seen["$dir"]=1
+        printf '%s\n' "$dir"
+    done < <(printf '%s\n' "${KODEXBAR_CLAUDE_CONFIG_DIRS-}" | tr ';' '\n')
+}
+
 if [[ ${1-} != usage ]]; then
     exec "$upstream" "$@"
 fi
@@ -388,9 +405,38 @@ if (( has_provider == 0 )); then
     run_provider nan
     run_provider opencode --provider opencodego --source auto
     run_provider deepseek --provider deepseek --source api
-    # Claude Code subscription windows come from the installed Claude CLI. The
-    # explicit CLI source avoids the auto path that prefers the claude.ai API.
-    run_provider claude --provider claude --source cli
+    # Keep the same sequential upstream query pattern, with one isolated result
+    # per config dir. Only email leaves the identity file; UUID is for dedupe only.
+    claude_index=0
+    declare -A claude_seen_uuids=()
+    while IFS= read -r claude_dir; do
+        claude_output=$tmpdir/claude-$claude_index.json
+        claude_index=$((claude_index + 1))
+        if ! CLAUDE_CONFIG_DIR="$claude_dir" "$upstream" "${original_args[@]}" --format json --json-only \
+            --provider claude --source cli >"$claude_output" 2>"$claude_output.stderr"; then
+            continue
+        fi
+        claude_entry_valid "$claude_output" || continue
+        claude_identity=$claude_dir/.claude.json
+        if [[ ! ${CLAUDE_CONFIG_DIR+x} && $claude_dir == "$HOME/.claude" ]]; then
+            claude_identity=$HOME/.claude.json
+        fi
+        # Missing, malformed or off-shape identity never invalidates usage.
+        claude_email=$(jq -r '.oauthAccount.emailAddress | select(type == "string" and length > 0)' "$claude_identity" 2>/dev/null) || claude_email=""
+        claude_uuid=$(jq -r '.oauthAccount.accountUuid | select(type == "string" and length > 0)' "$claude_identity" 2>/dev/null) || claude_uuid=""
+        if [[ -n $claude_uuid ]]; then
+            [[ ! ${claude_seen_uuids["$claude_uuid"]+present} ]] || continue
+            claude_seen_uuids["$claude_uuid"]=1
+        fi
+        claude_basename=${claude_dir%/}
+        claude_account=${claude_email:-${claude_basename##*/}}
+        jq --arg account "$claude_account" '
+            if type == "array" then map(.account = $account)
+            else .account = $account end' "$claude_output" >"$claude_output.enriched" \
+            && mv "$claude_output.enriched" "$claude_output" || continue
+        outputs+=("$claude_output")
+        successes=$((successes + 1))
+    done < <(claude_config_dirs)
 
     if (( successes == 0 )); then
         printf 'kodexbar-multi: all provider usage queries failed; check codexbar credentials and KODEXBAR_CODEXBAR_COMMAND\n' >&2
