@@ -43,16 +43,59 @@ PlasmoidItem {
     property string pinnedEntryKey: ""
 
     preferredRepresentation: compactRepresentation
-    toolTipMainText: "KodexBar"
-    toolTipSubText: {
+    toolTipMainText: tooltipTitle(compactEntry())
+    toolTipSubText: tooltipLines(compactEntry(), Date.now()).join("\n")
+
+    // Hover identity deliberately includes the account even when popup emails
+    // are disabled. These helpers depend only on their inputs and widget state.
+    function tooltipTitle(entry) {
+        if (!entry) {
+            return "KodexBar"
+        }
+        var name = providerName(entry.provider)
+        return entry.account ? name + " · " + entry.account : name
+    }
+
+    function tooltipLines(entry, nowMs) {
+        var lines = []
         if (errorMessage.length > 0) {
-            return errorMessage
+            lines.push(errorMessage)
         }
-        var entry = compactEntry()
-        if (entry && entry.signedOut) {
-            return entry.errorMessage
+        if (!entry) {
+            lines.push(allEntriesHidden() ? i18n("All accounts are hidden.")
+                : (loading ? i18n("Loading") : i18n("No data")))
+        } else {
+            if (entry.errorMessage || entry.signedOut) {
+                lines.push(entry.errorMessage || i18n("Sign in"))
+            } else {
+                var windows = [
+                    { title: entry.primaryTitle || i18n("5-hour"), left: entry.primaryPercentLeft, reset: entry.primaryResetsAt },
+                    { title: entry.secondaryTitle || i18n("Weekly"), left: entry.secondaryPercentLeft, reset: entry.secondaryResetsAt }
+                ]
+                for (var i = 0; i < windows.length; i++) {
+                    var window = windows[i]
+                    var used = usedPercent(window.left)
+                    if (used === null) {
+                        continue
+                    }
+                    var line = i18n("%1: %2% used", window.title, Math.round(used))
+                    var reset = formatResetTime(window.reset, nowMs, true)
+                    if (reset.length > 0) {
+                        line += " · " + reset
+                    }
+                    lines.push(line)
+                }
+            }
+            var cached = cachedLabel(entry)
+            if (cached.length > 0) {
+                lines.push(cached)
+            }
         }
-        return panelText()
+        var state = loading ? i18n("Refreshing…") : checkedLabel()
+        if (state.length > 0) {
+            lines.push(state)
+        }
+        return lines
     }
 
     function entryKey(entry) {
@@ -681,7 +724,7 @@ PlasmoidItem {
         return i18n("%1% used", Math.round(used))
     }
 
-    function formatResetTime(value) {
+    function formatResetTime(value, nowMs, lowercase) {
         if (!value) {
             return ""
         }
@@ -690,20 +733,20 @@ PlasmoidItem {
         if (isNaN(timestamp)) {
             return ""
         }
-        var diff = Math.max(0, timestamp - Date.now())
+        var diff = Math.max(0, timestamp - (nowMs === undefined ? Date.now() : nowMs))
         var minutes = Math.round(diff / 60000)
         if (minutes < 1) {
-            return i18n("Resets now")
+            return lowercase ? i18n("resets now") : i18n("Resets now")
         }
         var hours = Math.floor(minutes / 60)
         var days = Math.floor(hours / 24)
         if (days > 0) {
-            return i18n("Resets in %1d %2h", days, hours % 24)
+            return i18n(lowercase ? "resets in %1d %2h" : "Resets in %1d %2h", days, hours % 24)
         }
         if (hours > 0) {
-            return i18n("Resets in %1h %2m", hours, minutes % 60)
+            return i18n(lowercase ? "resets in %1h %2m" : "Resets in %1h %2m", hours, minutes % 60)
         }
-        return i18n("Resets in %1m", minutes)
+        return i18n(lowercase ? "resets in %1m" : "Resets in %1m", minutes)
     }
 
     function resetTimeFromDescription(value) {
@@ -1513,6 +1556,8 @@ PlasmoidItem {
             source: entry.source,
             account: entry.account || usage.accountEmail || identity.accountEmail || "",
             plan: usage.loginMethod || identity.loginMethod || dashboard.accountPlan || "",
+            primaryTitle: windowTitle(primary, i18n("5-hour")),
+            secondaryTitle: windowTitle(secondary, i18n("Weekly")),
             primaryPercentLeft: providerKey === "deepseek" ? null : displayPercentLeft(entry.provider, primary, secondary),
             primaryResetsAt: providerKey === "deepseek" ? null : resetAt(primary),
             secondaryPercentLeft: providerKey === "deepseek" ? null : percentLeft(secondary),

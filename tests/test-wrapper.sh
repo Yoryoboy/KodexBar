@@ -677,8 +677,9 @@ extract_function() {
         capture && /^    \}$/ { exit }
     ' "$root/contents/ui/main.qml"
 }
+assert grep -Fq 'toolTipSubText: tooltipLines(compactEntry(), Date.now()).join("\n")' "$root/contents/ui/main.qml"
 display_functions=""
-for name in carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -752,6 +753,7 @@ Item {
     property var hiddenAccounts: []
     property bool loading: false
     property string generatedAt: "now"
+    property string errorMessage: ""
     property bool showProviderInPanel: true
     property bool showUsedPercentInPanel: true
     property bool showCreditsInPanel: true
@@ -790,8 +792,10 @@ Item {
     }
 
     // Plasma supplies i18n at runtime; preserve its placeholder contract here.
-    function i18n(text, value) {
-        return value === undefined ? text : text.replace("%1", String(value))
+    function i18n(text, value, second, third) {
+        return text.replace("%1", value === undefined ? "%1" : String(value))
+            .replace("%2", second === undefined ? "%2" : String(second))
+            .replace("%3", third === undefined ? "%3" : String(third))
     }
 
     function i18np(single, plural, count) {
@@ -806,6 +810,70 @@ $display_functions
             return { provider: "codex", account: account, source: "cli",
                 rows: [{ title: "Session" }], creditsRemaining: null,
                 codeReviewRemainingPercent: null, fetchedAt: fetchedAt }
+        }
+
+        function tooltipFixture() {
+            return { provider: "codex", account: "fixture@example.com",
+                primaryPercentLeft: 54, secondaryPercentLeft: 69,
+                primaryTitle: "5-hour", secondaryTitle: "Weekly",
+                primaryResetsAt: "2026-09-21T13:50:00Z",
+                secondaryResetsAt: "2026-09-23T12:00:00Z" }
+        }
+
+        function test_tooltip_windows_and_resets() {
+            loading = false; errorMessage = ""; entries = []; generatedAt = "fixture time"
+            var entry = tooltipFixture()
+            compare(tooltipTitle(entry), "Codex · fixture@example.com")
+            compare(tooltipLines(entry, Date.parse("2026-09-21T12:00:00Z")).join("\u005cn"),
+                "5-hour: 46% used · resets in 1h 50m\u005cnWeekly: 31% used · resets in 2d 0h\u005cnChecked fixture time")
+        }
+
+        function test_tooltip_missing_reset_and_unknown_window() {
+            loading = false; errorMessage = ""; entries = []; generatedAt = ""
+            var entry = tooltipFixture()
+            entry.primaryResetsAt = null
+            entry.secondaryPercentLeft = null
+            compare(tooltipLines(entry, 0).join("\u005cn"), "5-hour: 46% used")
+            entry.primaryResetsAt = "invalid"
+            compare(tooltipLines(entry, 0).join("\u005cn"), "5-hour: 46% used")
+        }
+
+        function test_tooltip_stale_and_cached() {
+            loading = false; errorMessage = ""; generatedAt = "fixture time"
+            var entry = tooltipFixture()
+            entry.stale = true; entry.staleSince = 1000
+            entries = [entry]
+            var lines = tooltipLines(entry, 0)
+            compare(lines[2], cachedLabel(entry))
+            compare(lines[3], "Checked fixture time · 1 provider not updated")
+            entry.stale = false; entry.provider = "claude"; entry.cachedAt = "2026-09-21T12:00:00Z"
+            compare(tooltipLines(entry, 0)[2], cachedLabel(entry))
+        }
+
+        function test_tooltip_error_and_loading() {
+            entries = []; generatedAt = "fixture time"; loading = true; errorMessage = "Fetch failed"
+            var entry = tooltipFixture()
+            entry.errorMessage = "Sign in to Codex"; entry.signedOut = true
+            compare(tooltipLines(entry, 0).join("\u005cn"), "Fetch failed\u005cnSign in to Codex\u005cnRefreshing…")
+            entry.signedOut = false; entry.errorMessage = "Provider failed"
+            loading = false; errorMessage = ""
+            compare(tooltipLines(entry, 0).join("\u005cn"), "Provider failed\u005cnChecked fixture time")
+            entry.errorMessage = ""; loading = true
+            compare(tooltipLines(entry, 0).slice(-1)[0], "Refreshing…")
+            loading = false
+        }
+
+        function test_tooltip_no_entry() {
+            entries = []; loading = false; errorMessage = ""; generatedAt = ""
+            compare(tooltipTitle(null), "KodexBar")
+            compare(tooltipLines(null, 0).join("\u005cn"), "No data")
+            loading = true
+            compare(tooltipLines(null, 0).join("\u005cn"), "Loading\u005cnRefreshing…")
+            loading = false
+            entries = [{ provider: "codex", account: "hidden" }]
+            hiddenAccounts = [hiddenAccountKey(entries[0])]
+            compare(tooltipLines(null, 0).join("\u005cn"), "All accounts are hidden.")
+            entries = []; hiddenAccounts = []
         }
 
         function test_usage_level_data() {
