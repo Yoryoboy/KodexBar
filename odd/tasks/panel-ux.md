@@ -40,3 +40,7 @@ Non-goals: notifications (next PR), aliases, provider list unification.
 - Independent verifier: `bash tests/test-wrapper.sh` exit 0 (qmltestrunner ran), `git diff --check 835f636..HEAD` exit 0, `qmllint` only `[unqualified]`, `xmllint` valid, all 14 cfg_ settings match `main.xml`; Keys handlers accept only handled events (Tab untouched); ids in scope; no obvious binding loops.
 - Not verified: live Plasma hover/keyboard/screen-reader behaviour.
 - Native review `review-2e068c4aceac5ed5` on the PR slice (explicit base `835f636`): high tier, four lenses, approved; acknowledgement burned authority for target `sha256:49914a386512826a8e3e1a9108d46dff032de0064098fc31721cfd3e25ec254c`. Non-blocking advisories: R3-001 (`main.qml:119-121`, tooltip window lines), R3-002 (`main.qml:1754-1779`, wheel cycling loop).
+
+## Delivery
+
+User validated live behaviour and authorized push and merge without a PR. `main` fast-forwarded to `5061f46` (refresh-reliability and panel-ux together) and pushed to `origin/main`; local feature branches deleted (never pushed).

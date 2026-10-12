@@ -40,6 +40,7 @@ Non-goals: notifications, tooltip/colour/shortcut UX (later PRs), provider list 
 - Not verified: live Plasma behaviour (stale cards, banner, spinner, configure shortcut). Late-result guard has no generation id (non-blocking).
 - Native review `review-272e851841344366`: high tier, four lenses, approved; acknowledgement burned authority for target `sha256:1b09870c2df2a40e6ce1a0f9d9650d65c076c45d6011e43b2599ad40d3460ebd`. Non-blocking advisories kept as follow-ups: R3-001 (`main.qml` failed-refresh path), R3-002 (`tests/test-wrapper.sh:554-562`), R4-aggregate-deadline (5-min watchdog vs per-provider 60 s bounds: a fully hung aggregate can exceed the watchdog and the orphaned process keeps running).
 
-## Next step
 
-Install and reload Plasma for live validation (user-authorized), then push/PR/merge per user decision.
+## Delivery
+
+User validated live behaviour and authorized push and merge without a PR. `main` fast-forwarded to `5061f46` (refresh-reliability and panel-ux together) and pushed to `origin/main`; local feature branches deleted (never pushed).
