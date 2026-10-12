@@ -127,6 +127,7 @@ This variable selects only the executable to run; it does not configure an endpo
 
 - Click the panel item to open the popup.
 - Click a provider/account card to pin it to the compact panel label; the newest active account is used until you click one.
+- Right-click a provider/account card and choose **Hide account** to hide it persistently. This is display-only: the wrapper still queries the account. Restore it in widget **Settings → Hidden accounts → Show**.
 - Use the refresh button in the popup to query the CLI immediately.
 - Open widget settings to change provider, source, refresh cadence, and compact label fields.
 - Leave Provider as `Best available` if you want KodexBar to find the first usable Linux-capable provider/source combination.
@@ -161,6 +162,7 @@ KodexBar exposes these Plasma widget settings:
 | Show credits in panel | Include remaining credits only when a positive numeric balance is available. |
 | Show email in widget | Show the account email inside the popup when available. |
 | Fetch provider status | Add `--status` to CLI calls and display incident/maintenance state. |
+| Hidden accounts | Lists accounts hidden from the popup and panel; choose **Show** to restore an account. Queries are unchanged. |
 
 Provider credentials and provider toggles are still controlled by the CodexBar CLI config at `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json` (XDG config semantics apply).
 

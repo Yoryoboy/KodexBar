@@ -29,6 +29,20 @@ KCM.SimpleKCM {
     property alias cfg_showCostSummary: showCostSummary.checked
     property bool cfg_showCostSummaryDefault
 
+    property var cfg_hiddenAccounts: []
+    property var cfg_hiddenAccountsDefault
+
+    function showHiddenAccount(key) {
+        cfg_hiddenAccounts = (cfg_hiddenAccounts || []).filter(function(value) { return value !== key })
+    }
+
+    function hiddenAccountLabel(key) {
+        var separator = key.indexOf("|")
+        var provider = separator >= 0 ? key.slice(0, separator) : key
+        var account = separator >= 0 ? key.slice(separator + 1) : ""
+        return account.length > 0 ? provider + " — " + account : provider
+    }
+
     function indexForValue(model, value) {
         for (var i = 0; i < model.count; i++) {
             if (model.get(i).value === value) {
@@ -204,6 +218,42 @@ KCM.SimpleKCM {
                 QQC2.CheckBox {
                     id: showCostSummary
                     text: i18n("Show local cost summary")
+                }
+            }
+
+            Kirigami.Separator {
+                Layout.fillWidth: true
+            }
+
+            Kirigami.Heading {
+                text: i18n("Hidden accounts")
+                level: 3
+                Layout.fillWidth: true
+            }
+
+            PlasmaComponents.Label {
+                text: i18n("No hidden accounts. Right-click a card in the popup to hide it.")
+                visible: !page.cfg_hiddenAccounts || page.cfg_hiddenAccounts.length === 0
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Repeater {
+                model: page.cfg_hiddenAccounts || []
+                delegate: RowLayout {
+                    required property string modelData
+                    Layout.fillWidth: true
+
+                    PlasmaComponents.Label {
+                        text: page.hiddenAccountLabel(modelData)
+                        wrapMode: Text.WrapAnywhere
+                        Layout.fillWidth: true
+                    }
+
+                    QQC2.Button {
+                        text: i18n("Show")
+                        onClicked: page.showHiddenAccount(modelData)
+                    }
                 }
             }
         }
