@@ -26,7 +26,16 @@ Non-goals: notifications (next PR), aliases, provider list unification.
 
 ## Tasks
 
-- [ ] **PX-1 — Usage thresholds setting and coloured compact label**
-- [ ] **PX-2 — Informative compact tooltip**
-- [ ] **PX-3 — Middle-click refresh and wheel account cycling**
-- [ ] **PX-4 — Accessible names and keyboard navigation**
+- [x] **PX-1 — Usage thresholds setting and coloured compact label** — `619cb02`
+  - `colorPanelByUsage`/`warningUsedPercent`/`criticalUsedPercent`; `maxUsedPercent`, `usageLevel`, `compactLabelColor`; stale keeps last-known colour; inverted critical raised to warning. RED 11 qmltests; GREEN.
+- [x] **PX-2 — Informative compact tooltip** — `b8f4d3d`
+  - Main text provider + account (email shown on hover regardless of popup setting); per-window used + reset, stale/cached, errors, refresh state. RED 5 qmltests; GREEN. Countdown text updates on re-evaluation (refresh), not every second.
+- [x] **PX-3 — Middle-click refresh and wheel account cycling** — `0a9c3b1`
+  - Middle-click refresh guarded while loading; `cycledEntryKey` with wrap, 120-unit steps, reversal resets; positive wheel = next. RED (helper missing); GREEN 9 cases.
+- [x] **PX-4 — Accessible names and keyboard navigation** — `3323698`
+  - Compact button role/name/description/press action, Enter/Space; cards Tab-focusable, focus border, Enter/Space pin, Menu/Shift+F10 menu; Refresh tooltip/name. Arrow keys skipped. RED (`cardAccessibleName` missing); GREEN.
+
+## Evidence
+
+- Independent verifier: `bash tests/test-wrapper.sh` exit 0 (qmltestrunner ran), `git diff --check 835f636..HEAD` exit 0, `qmllint` only `[unqualified]`, `xmllint` valid, all 14 cfg_ settings match `main.xml`; Keys handlers accept only handled events (Tab untouched); ids in scope; no obvious binding loops.
+- Not verified: live Plasma hover/keyboard/screen-reader behaviour.
