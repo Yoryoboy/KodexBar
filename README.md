@@ -156,6 +156,13 @@ The popup renders common CodexBar CLI fields:
 
 Provider-specific charts, account management, cookie/API-key editing, notifications, and cost scans remain available through the upstream CodexBar app and CLI.
 
+## Accessibility and keyboard
+
+- Use **Tab / Shift+Tab** to focus the panel item, popup account cards, and buttons. Focused cards show a theme-coloured border.
+- Press **Enter / Return / Space** on the panel item to toggle the popup, or on a card to select and pin its account.
+- Press **Menu** or **Shift+F10** on a card to open its **Hide account** menu.
+- Accessible names identify the provider, account, usage windows, and stale/cached or error state. The panel description includes its text and usage level; the icon-only **Refresh** button has an accessible name and tooltip. When all accounts are hidden, **Show hidden accounts…** opens settings to restore them.
+
 ## Settings
 
 KodexBar exposes these Plasma widget settings:

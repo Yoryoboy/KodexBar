@@ -679,7 +679,7 @@ extract_function() {
 }
 assert grep -Fq 'toolTipSubText: tooltipLines(compactEntry(), Date.now()).join("\n")' "$root/contents/ui/main.qml"
 display_functions=""
-for name in tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey cycledEntryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in cardAccessibleName tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey cycledEntryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -837,6 +837,38 @@ $display_functions
                 primaryTitle: "5-hour", secondaryTitle: "Weekly",
                 primaryResetsAt: "2026-09-21T13:50:00Z",
                 secondaryResetsAt: "2026-09-23T12:00:00Z" }
+        }
+
+        function test_card_accessible_name_windows() {
+            var entry = tooltipFixture()
+            compare(cardAccessibleName(entry), "Codex, fixture@example.com, 5-hour 46% used, Weekly 31% used")
+            entry.secondaryPercentLeft = null
+            compare(cardAccessibleName(entry), "Codex, fixture@example.com, 5-hour 46% used")
+        }
+
+        function test_card_accessible_name_stale_and_error() {
+            var entry = tooltipFixture()
+            entry.stale = true; entry.staleSince = 1000
+            compare(cardAccessibleName(entry), "Codex, fixture@example.com, 5-hour 46% used, Weekly 31% used, " + cachedLabel(entry))
+            entry.errorMessage = "Provider failed"
+            compare(cardAccessibleName(entry), "Codex, fixture@example.com, error: Provider failed, " + cachedLabel(entry))
+        }
+
+        function test_card_accessible_name_missing_account() {
+            var entry = tooltipFixture()
+            delete entry.account
+            compare(cardAccessibleName(entry), "Codex, 5-hour 46% used, Weekly 31% used")
+            compare(cardAccessibleName(null), "KodexBar")
+            entry.primaryPercentLeft = null; entry.secondaryPercentLeft = undefined
+            compare(cardAccessibleName(entry), "Codex")
+            entry.signedOut = true
+            compare(cardAccessibleName(entry), "Codex, error: Sign in")
+        }
+
+        function test_card_accessible_name_third_window() {
+            var entry = tooltipFixture()
+            entry.provider = "opencodego"; entry.tertiaryPercentLeft = 80
+            compare(cardAccessibleName(entry), "OpenCode Go, fixture@example.com, 5-hour 46% used, Weekly 31% used, Monthly 20% used")
         }
 
         function test_tooltip_windows_and_resets() {
@@ -1655,5 +1687,35 @@ assert grep -Fq 'i18n("All accounts are hidden.")' "$root/contents/ui/main.qml"
 assert grep -Fq 'i18n("Show hidden accounts…")' "$root/contents/ui/main.qml"
 assert grep -Fq 'visible: root.allEntriesHidden()' "$root/contents/ui/main.qml"
 assert grep -Fq 'onClicked: Plasmoid.internalAction("configure").trigger()' "$root/contents/ui/main.qml"
+
+# Accessibility assertions are scoped to the component owning each action.
+assert grep -Fq 'activeFocusOnTab: true' <<<"$compact_body"
+assert grep -Fq 'Accessible.role: Accessible.Button' <<<"$compact_body"
+assert grep -Fq 'Accessible.name: root.toolTipMainText' <<<"$compact_body"
+assert grep -Fq 'Accessible.description: root.compactAccessibleDescription()' <<<"$compact_body"
+assert grep -Fq 'Accessible.onPressAction: root.expanded = !root.expanded' <<<"$compact_body"
+assert grep -Fq 'Keys.onPressed: (event) =>' <<<"$compact_body"
+for key in Key_Return Key_Enter Key_Space; do
+    assert grep -Fq "Qt.$key" <<<"$compact_body"
+done
+card_body=$(awk '/id: accountCard$/ { capture = 1 }
+    capture && /ColumnLayout \{/ { exit }
+    capture { print }' "$root/contents/ui/main.qml")
+assert grep -Fq 'activeFocusOnTab: true' <<<"$card_body"
+assert grep -Fq 'Accessible.role: Accessible.Button' <<<"$card_body"
+assert grep -Fq 'Accessible.name: root.cardAccessibleName(modelData)' <<<"$card_body"
+assert grep -Fq 'Accessible.onPressAction: root.clickEntry(modelData)' <<<"$card_body"
+assert grep -Fq 'Keys.onPressed: (event) =>' <<<"$card_body"
+for key in Key_Return Key_Enter Key_Space Key_Menu Key_F10 ShiftModifier; do
+    assert grep -Fq "Qt.$key" <<<"$card_body"
+done
+assert grep -Fq 'accountMenu.popup(accountCard, 0, accountCard.height)' <<<"$card_body"
+assert grep -Fq 'border.width: selected || activeFocus ? 1 : 0' <<<"$card_body"
+assert grep -Fq 'border.color: activeFocus ? Kirigami.Theme.focusColor' <<<"$card_body"
+refresh_body=$(grep -A12 'id: refreshButton' "$root/contents/ui/main.qml")
+assert grep -Fq 'Accessible.name: i18n("Refresh")' <<<"$refresh_body"
+assert grep -Fq 'QQC2.ToolTip.text: i18n("Refresh")' <<<"$refresh_body"
+assert grep -Fq 'QQC2.ToolTip.visible: hovered || activeFocus' <<<"$refresh_body"
+assert grep -Fq 'onClicked: root.refresh()' <<<"$refresh_body"
 
 printf 'test-wrapper.sh: all tests passed\n'

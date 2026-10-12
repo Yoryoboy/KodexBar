@@ -56,6 +56,47 @@ PlasmoidItem {
         return entry.account ? name + " · " + entry.account : name
     }
 
+    // Accessible summaries use only the entry and pure formatting helpers.
+    function cardAccessibleName(entry) {
+        if (!entry) {
+            return "KodexBar"
+        }
+        var summary = providerName(entry.provider)
+        if (entry.account) {
+            summary = i18n("%1, %2", summary, entry.account)
+        }
+        if (entry.errorMessage || entry.signedOut) {
+            summary = i18n("%1, error: %2", summary, entry.errorMessage || i18n("Sign in"))
+        } else {
+            var windows = [
+                { title: entry.primaryTitle || i18n("5-hour"), left: entry.primaryPercentLeft },
+                { title: entry.secondaryTitle || i18n("Weekly"), left: entry.secondaryPercentLeft }
+            ]
+            var provider = String(entry.provider || "").toLowerCase()
+            if (provider === "opencode" || provider === "opencodego") {
+                windows.push({ title: entry.tertiaryTitle || i18n("Monthly"), left: entry.tertiaryPercentLeft })
+            }
+            for (var i = 0; i < windows.length; i++) {
+                var used = usedPercent(windows[i].left)
+                if (used !== null) {
+                    summary = i18n("%1, %2 %3% used", summary, windows[i].title, Math.round(used))
+                }
+            }
+        }
+        var freshness = cachedLabel(entry)
+        return freshness.length > 0 ? i18n("%1, %2", summary, freshness) : summary
+    }
+
+    function compactAccessibleDescription() {
+        var entry = compactEntry()
+        var level = usageLevel(entry && !entry.errorMessage ? maxUsedPercent(entry) : null,
+            warningUsedPercent, criticalUsedPercent)
+        if (level === "critical") return i18n("%1, critical", panelText())
+        if (level === "warning") return i18n("%1, warning", panelText())
+        if (level === "normal") return i18n("%1, normal", panelText())
+        return i18n("%1, usage unknown", panelText())
+    }
+
     function tooltipLines(entry, nowMs) {
         var lines = []
         if (errorMessage.length > 0) {
@@ -1685,6 +1726,17 @@ PlasmoidItem {
 
     compactRepresentation: MouseArea {
         id: compact
+        activeFocusOnTab: true
+        Accessible.role: Accessible.Button
+        Accessible.name: root.toolTipMainText
+        Accessible.description: root.compactAccessibleDescription()
+        Accessible.onPressAction: root.expanded = !root.expanded
+        Keys.onPressed: (event) => {
+            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                if (!event.isAutoRepeat) root.expanded = !root.expanded
+                event.accepted = true
+            }
+        }
         Layout.minimumWidth: compactRow.implicitWidth + Kirigami.Units.smallSpacing * 2
         Layout.minimumHeight: Kirigami.Units.iconSizes.smallMedium
         acceptedButtons: Qt.LeftButton | Qt.MiddleButton
@@ -1831,6 +1883,21 @@ PlasmoidItem {
                 Repeater {
                     model: root.visibleEntries()
                     delegate: Rectangle {
+                        id: accountCard
+                        activeFocusOnTab: true
+                        Accessible.role: Accessible.Button
+                        Accessible.name: root.cardAccessibleName(modelData)
+                        Accessible.onPressAction: root.clickEntry(modelData)
+                        Keys.onPressed: (event) => {
+                            if (event.key === Qt.Key_Return || event.key === Qt.Key_Enter || event.key === Qt.Key_Space) {
+                                if (!event.isAutoRepeat) root.clickEntry(modelData)
+                                event.accepted = true
+                            } else if (event.key === Qt.Key_Menu
+                                    || (event.key === Qt.Key_F10 && (event.modifiers & Qt.ShiftModifier))) {
+                                if (!event.isAutoRepeat) accountMenu.popup(accountCard, 0, accountCard.height)
+                                event.accepted = true
+                            }
+                        }
                         readonly property bool selected: root.entryKey(modelData) === root.selectedEntryKey
                         readonly property real used: root.usedPercent(modelData.primaryPercentLeft) || 0
                         // Preferred card width, but flexible: the column fills the
@@ -1842,8 +1909,8 @@ PlasmoidItem {
                         Layout.preferredHeight: full.accountCardHeight
                         radius: Kirigami.Units.cornerRadius
                         color: selected ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.16) : Kirigami.Theme.backgroundColor
-                        border.width: selected ? 1 : 0
-                        border.color: Kirigami.Theme.highlightColor
+                        border.width: selected || activeFocus ? 1 : 0
+                        border.color: activeFocus ? Kirigami.Theme.focusColor : Kirigami.Theme.highlightColor
                         opacity: modelData.errorMessage || modelData.stale ? 0.62 : 1
 
                         MouseArea {
@@ -2339,6 +2406,10 @@ PlasmoidItem {
                     Layout.preferredHeight: Kirigami.Units.iconSizes.small
                 }
                 QQC2.ToolButton {
+                    id: refreshButton
+                    Accessible.name: i18n("Refresh")
+                    QQC2.ToolTip.text: i18n("Refresh")
+                    QQC2.ToolTip.visible: hovered || activeFocus
                     icon.name: "view-refresh"
                     display: QQC2.AbstractButton.IconOnly
                     text: i18n("Refresh")
