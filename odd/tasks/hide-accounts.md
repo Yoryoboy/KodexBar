@@ -34,6 +34,8 @@ User cancelled one Codex account and wants to hide it (and any future dead accou
 - Independent verifier: `bash tests/test-wrapper.sh` exit 0 (qmltestrunner ran, no fallback), `git diff --check` exit 0, `qmllint` exit 0 with only `[unqualified]` warnings (no new categories). Menu/settings wiring inspected: left click pins, right click only opens menu; Show assigns a new array.
 - Not verified: live Plasma interaction (context menu, settings restore). Requires install + plasmashell reload, user-authorized.
 
+- Native review `review-49170ab6be060824`: high tier, four lenses, approved; acknowledgement burned authority for target `sha256:59e9ce5bf4bf80d68e1b2bc503a1ac20ffcf6b6bb6f9d7d7ff2cd62222173f97`. Non-blocking advisory R3-001 (reliability, `tests/test-wrapper.sh:554-562`) kept as separate follow-up.
+
 ## Next step
 
 Install (`./install.sh`) and reload Plasma to validate live; push/merge remain the user's decision.
