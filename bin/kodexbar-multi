@@ -32,6 +32,17 @@ resolve_command() {
 
 upstream=$(resolve_command) || exit 127
 
+# Aggregate queries only; explicit provider and non-usage exec paths bypass this.
+run_bounded() {
+    local seconds=${KODEXBAR_PROVIDER_TIMEOUT-60}
+    [[ $seconds =~ ^[0-9]+$ ]] || seconds=60
+    if [[ ! $seconds =~ ^0+$ ]] && command -v timeout >/dev/null 2>&1; then
+        timeout --kill-after=5 "$seconds" "$@"
+    else
+        "$@"
+    fi
+}
+
 local_activity_epoch() {
     local home=$1 latest directory pattern
     directory=$home/${2:-sessions}
@@ -74,7 +85,7 @@ codex_candidate_homes() {
 
 codex_identity_for_home() {
     local home=$1 payload identities identity_count
-    payload=$(CODEX_HOME="$home" "$upstream" usage --provider codex --all-accounts --format json --json-only 2>/dev/null) || return 1
+    payload=$(CODEX_HOME="$home" run_bounded "$upstream" usage --provider codex --all-accounts --format json --json-only 2>/dev/null) || return 1
     identities=$(jq -r '
         [if type == "array" then .[] else . end
          | (.account // .usage.accountEmail // .usage.identity.accountEmail // empty)
@@ -175,7 +186,7 @@ nan_command() {
 nan_account() {
     local command identity
     command=$(nan_command) || return 0
-    identity=$("$command" me 2>/dev/null || true)
+    identity=$(run_bounded "$command" me 2>/dev/null || true)
     if [[ -n $identity ]] && jq -e . >/dev/null 2>&1 <<<"$identity"; then
         jq -r '.email // empty' <<<"$identity" 2>/dev/null || true
     fi
@@ -220,7 +231,7 @@ nan_quota_command() {
 nan_quota_entry() {
     local output=$1 helper quota account updated_at
     helper=$(nan_quota_command) || return 1
-    quota=$("$helper" 2>/dev/null) || return 1
+    quota=$(run_bounded "$helper" 2>/dev/null) || return 1
     [[ -n $quota ]] || return 1
     # Validate every required field, not just the top level: a helper that emits a
     # structurally valid envelope with a malformed model must not win the cloud
@@ -266,7 +277,7 @@ nan_usage_entry() {
     # recovers the common case. Invalid JSON is not retried and is handled below.
     metrics=""
     for attempt in 1 2; do
-        metrics=$("$command" metrics usage 2>/dev/null) && [[ -n $metrics ]] && break
+        metrics=$(run_bounded "$command" metrics usage 2>/dev/null) && [[ -n $metrics ]] && break
         metrics=""
         (( attempt < 2 )) && sleep 2
     done
@@ -378,7 +389,7 @@ if (( has_provider == 0 )); then
             fi
             return 0
         fi
-        if "$upstream" "${original_args[@]}" --format json --json-only "$@" >"$output" 2>"$tmpdir/$name.stderr" \
+        if run_bounded "$upstream" "${original_args[@]}" --format json --json-only "$@" >"$output" 2>"$tmpdir/$name.stderr" \
             && jq -e . "$output" >/dev/null 2>&1; then
             if [[ $name == deepseek ]]; then
                 jq 'def money: gsub("[, $]"; "") | tonumber;
@@ -426,7 +437,7 @@ if (( has_provider == 0 )); then
             else
                 export CLAUDE_CONFIG_DIR="$claude_dir"
             fi
-            "$upstream" "${original_args[@]}" --format json --json-only --provider claude --source cli
+            run_bounded "$upstream" "${original_args[@]}" --format json --json-only --provider claude --source cli
         ) </dev/null >"$claude_output" 2>"$claude_output.stderr"; then
             continue
         fi

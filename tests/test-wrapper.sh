@@ -12,10 +12,13 @@ log=$tmpdir/args.log
 # Isolate identity reads from the host and inherited account configuration.
 export HOME=$tmpdir/home
 mkdir -p "$HOME/.claude"
-unset CLAUDE_CONFIG_DIR KODEXBAR_CLAUDE_CONFIG_DIRS
+unset CLAUDE_CONFIG_DIR KODEXBAR_CLAUDE_CONFIG_DIRS KODEXBAR_PROVIDER_TIMEOUT
 cat >"$fake" <<'FAKE'
 #!/usr/bin/env bash
 printf '%s\n' "$*" >>"$FAKE_LOG"
+if [[ -n ${FAKE_SLEEP_PROVIDER-} && $* == *"--provider $FAKE_SLEEP_PROVIDER"* ]]; then
+    sleep "${FAKE_SLEEP_SECONDS:-8}"
+fi
 if [[ ${FAKE_MODE:-normal} == fail-all ]]; then exit 1; fi
 if [[ ${FAKE_MODE:-normal} == partial && $* == *"--provider opencodego"* ]]; then exit 1; fi
 if [[ $* == *"--provider codex"* ]]; then
@@ -113,6 +116,39 @@ assert_json() { jq -e "$1" >/dev/null <<<"$2" || fail "jq $1"; }
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'length == 5 and any(.[]; .provider == "codex" and .activity.lastActivityAt == "2025-01-02T03:04:05Z") and any(.[]; .provider == "opencodego" and .activity.lastActivityAt == "2025-01-04T03:04:05Z") and any(.[]; .provider == "deepseek") and any(.[]; .provider == "claude")' "$out"
 assert_json '.[] | select(.provider == "deepseek") | .credits | .remaining == 2.05 and .paidBalance == 2.05 and .grantedBalance == 0 and .currencyCode == "USD"' "$out"
+
+# A slow upstream is omitted while successful peers remain, for both query paths.
+if command -v timeout >/dev/null 2>&1; then
+    for provider in opencodego claude; do
+        start=$SECONDS
+        out=$(KODEXBAR_PROVIDER_TIMEOUT=1 FAKE_SLEEP_PROVIDER=$provider "$wrapper" usage --format json --json-only) \
+            || fail 'partial timeout returned failure'
+        elapsed=$((SECONDS - start))
+        assert test "$elapsed" -lt 5
+        assert_json "length == 4 and all(.[]; .provider != \"$provider\") and any(.[]; .provider == \"deepseek\") and any(.[]; .provider == \"codex\")" "$out"
+    done
+fi
+# Zero disables bounding, and explicit provider passthrough is never bounded.
+for query in aggregate explicit; do
+    args=(usage --format json --json-only)
+    seconds=0
+    [[ $query != explicit ]] || { args+=(--provider claude); seconds=1; }
+    start=$SECONDS
+    out=$(KODEXBAR_PROVIDER_TIMEOUT=$seconds FAKE_SLEEP_PROVIDER=claude FAKE_SLEEP_SECONDS=2 "$wrapper" "${args[@]}") \
+        || fail 'unbounded query returned failure'
+    assert test "$((SECONDS - start))" -ge 2
+    if [[ $query == aggregate ]]; then
+        assert_json 'length == 5 and any(.[]; .provider == "claude")' "$out"
+    else
+        assert_json '.provider == "claude"' "$out"
+    fi
+done
+# Invalid durations must not be passed to timeout or crash the aggregate.
+for seconds in invalid -1 0.1 ''; do
+    out=$(KODEXBAR_PROVIDER_TIMEOUT=$seconds "$wrapper" usage --format json --json-only) \
+        || fail 'invalid timeout returned failure'
+    assert_json 'length == 5 and any(.[]; .provider == "claude")' "$out"
+done
 
 export KODEXBAR_NAN_COMMAND=$fake_nan
 unset FAKE_NAN_MODE
@@ -427,6 +463,30 @@ cp "$fake_quota" "$installed_home/nan-cloud-quota"
 out=$(env -u KODEXBAR_NAN_QUOTA_COMMAND PATH="$isolated_path" XDG_BIN_HOME="$installed_home" HOME="$tmpdir/empty-home" KODEXBAR_NAN_COMMAND="$fake_nan" "$installed_dir/kodexbar-multi" usage --format json --json-only)
 assert_json 'length == 6 and any(.[]; .provider == "nan" and .source == "cloud")' "$out"
 export KODEXBAR_NAN_QUOTA_COMMAND=$tmpdir/no-quota-helper
+
+# The isolated PATH intentionally lacks timeout: the limit is best-effort.
+start=$SECONDS
+out=$(PATH="$isolated_path" KODEXBAR_NAN_COMMAND="$tmpdir/no-nan" KODEXBAR_PROVIDER_TIMEOUT=1 FAKE_SLEEP_PROVIDER=claude FAKE_SLEEP_SECONDS=2 "$wrapper" usage --format json --json-only) \
+    || fail 'query without timeout returned failure'
+assert test "$((SECONDS - start))" -ge 2
+assert_json 'length == 5 and any(.[]; .provider == "claude")' "$out"
+
+# Record the actual fallback duration without waiting 60 seconds.
+cat >"$isolated_path/timeout" <<'FAKETIMEOUT'
+#!/usr/bin/env bash
+printf '%s\n' "$1 $2" >>"$FAKE_TIMEOUT_LOG"
+shift 2
+exec "$@"
+FAKETIMEOUT
+chmod 755 "$isolated_path/timeout"
+for seconds in invalid -1 0.1 ''; do
+    : >"$tmpdir/timeout.log"
+    out=$(PATH="$isolated_path" KODEXBAR_NAN_COMMAND="$tmpdir/no-nan" FAKE_TIMEOUT_LOG="$tmpdir/timeout.log" KODEXBAR_PROVIDER_TIMEOUT=$seconds "$wrapper" usage --format json --json-only) \
+        || fail 'default timeout returned failure'
+    assert_json 'length == 5' "$out"
+    assert test "$(grep -c '^--kill-after=5 60$' "$tmpdir/timeout.log")" = 4
+    assert test "$(wc -l <"$tmpdir/timeout.log")" = 4
+done
 
 # Helper diagnostics must never reach the aggregate or the wrapper's stderr.
 export KODEXBAR_NAN_QUOTA_COMMAND=$fake_quota
