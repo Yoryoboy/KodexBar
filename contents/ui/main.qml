@@ -125,6 +125,10 @@ PlasmoidItem {
         return ordered.length > 0 ? ordered : unhidden
     }
 
+    function allEntriesHidden() {
+        return entries.length > 0 && visibleEntries().length === 0
+    }
+
     function selectedEntry() {
         var pool = visibleEntries()
         for (var i = 0; i < pool.length; i++) {
@@ -472,7 +476,7 @@ PlasmoidItem {
     }
 
     function panelText() {
-        if (entries.length === 0) {
+        if (visibleEntries().length === 0) {
             return loading ? i18n("Loading") : i18n("No data")
         }
         var entry = compactEntry()
@@ -1664,7 +1668,7 @@ PlasmoidItem {
             }
 
             Kirigami.Separator {
-                visible: root.entries.length > 0
+                visible: root.visibleEntries().length > 0
                 Layout.fillWidth: true
             }
 
@@ -1677,15 +1681,22 @@ PlasmoidItem {
             }
 
             PlasmaComponents.Label {
-                visible: root.errorMessage.length === 0 && root.entries.length === 0
-                text: root.loading ? i18n("Loading usage...") : i18n("No usage data available")
+                visible: root.visibleEntries().length === 0 && (root.allEntriesHidden() || root.errorMessage.length === 0)
+                text: root.allEntriesHidden() ? i18n("All accounts are hidden.")
+                    : root.loading ? i18n("Loading usage...") : i18n("No usage data available")
                 color: Kirigami.Theme.disabledTextColor
                 Layout.fillWidth: true
             }
 
+            PlasmaComponents.Button {
+                visible: root.allEntriesHidden()
+                text: i18n("Show hidden accounts…")
+                onClicked: Plasmoid.internalAction("configure").trigger()
+            }
+
             QQC2.ScrollView {
                 id: scrollView
-                visible: root.entries.length > 0
+                visible: root.visibleEntries().length > 0
                 clip: true
                 Layout.fillWidth: true
                 Layout.minimumHeight: 0
@@ -2060,7 +2071,7 @@ PlasmoidItem {
             }
 
             PlasmaComponents.Label {
-                visible: root.entries.length === 0
+                visible: root.visibleEntries().length === 0
                 text: root.generatedAt.length > 0 ? i18n("Updated %1", root.generatedAt) : ""
                 color: Kirigami.Theme.disabledTextColor
                 font.pointSize: Kirigami.Theme.smallFont.pointSize

@@ -595,7 +595,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -744,6 +744,25 @@ $display_functions
                 lastActivityAt: lastActivityAt || "",
                 errorMessage: ""
             }
+        }
+
+        function test_all_entries_hidden_without_entries() {
+            compare(allEntriesHidden(), false)
+        }
+
+        function test_all_entries_hidden_with_visible_account() {
+            entries = [entry("codex", "a"), entry("codex", "b")]
+            hiddenAccounts = ["codex|a"]
+            compare(allEntriesHidden(), false)
+        }
+
+        function test_all_entries_hidden_with_every_account_hidden() {
+            entries = [entry("codex", "a"), entry("claude", "b")]
+            hiddenAccounts = ["codex|a", "claude|b"]
+            compare(allEntriesHidden(), true)
+            selectedProvider = "codex"
+            compare(allEntriesHidden(), true)
+            compare(panelText(), "No data")
         }
 
         function test_user_hidden_account_in_aggregate() {
@@ -1236,5 +1255,10 @@ assert test -f "$protected_dir/kodexbar-multi"
 assert test -f "$protected_dir/nan-cloud-quota"
 assert grep -q 'preserving unrecognized wrapper' "$tmpdir/uninstall.err"
 assert grep -q 'preserving unrecognized quota helper' "$tmpdir/uninstall.err"
+
+assert grep -Fq 'i18n("All accounts are hidden.")' "$root/contents/ui/main.qml"
+assert grep -Fq 'i18n("Show hidden accounts…")' "$root/contents/ui/main.qml"
+assert grep -Fq 'visible: root.allEntriesHidden()' "$root/contents/ui/main.qml"
+assert grep -Fq 'onClicked: Plasmoid.internalAction("configure").trigger()' "$root/contents/ui/main.qml"
 
 printf 'test-wrapper.sh: all tests passed\n'

@@ -127,7 +127,7 @@ This variable selects only the executable to run; it does not configure an endpo
 
 - Click the panel item to open the popup.
 - Click a provider/account card to pin it to the compact panel label; the newest active account is used until you click one.
-- Right-click a provider/account card and choose **Hide account** to hide it persistently. This is display-only: the wrapper still queries the account. Restore it in widget **Settings → Hidden accounts → Show**.
+- Right-click a provider/account card and choose **Hide account** to hide it persistently. This is display-only: the wrapper still queries the account. Restore it in widget **Settings → Hidden accounts → Show**. When all accounts are hidden, the popup shows “All accounts are hidden.” and a **Show hidden accounts…** shortcut to widget settings.
 - Use the refresh button in the popup to query the CLI immediately.
 - Open widget settings to change provider, source, refresh cadence, and compact label fields.
 - Leave Provider as `Best available` if you want KodexBar to find the first usable Linux-capable provider/source combination.
