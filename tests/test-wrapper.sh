@@ -679,11 +679,30 @@ extract_function() {
 }
 assert grep -Fq 'toolTipSubText: tooltipLines(compactEntry(), Date.now()).join("\n")' "$root/contents/ui/main.qml"
 display_functions=""
-for name in tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey cycledEntryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
 done
+
+# Compact mouse shortcuts are wired separately from popup card clicks.
+compact_body=$(awk '
+    /compactRepresentation: MouseArea/ { capture = 1 }
+    capture && /RowLayout \{/ { exit }
+    capture { print }
+' "$root/contents/ui/main.qml")
+assert grep -Fq 'acceptedButtons: Qt.LeftButton | Qt.MiddleButton' <<<"$compact_body"
+assert grep -Fq 'onWheel: (wheel) =>' <<<"$compact_body"
+assert grep -Fq 'wheel.angleDelta.x' <<<"$compact_body"
+assert grep -Fq 'root.clickEntry(pool[i])' <<<"$compact_body"
+assert grep -Fq 'pool.length < 2' <<<"$compact_body"
+assert grep -Fq 'wheelAccumulator * delta < 0' <<<"$compact_body"
+middle_body=$(awk '/if \(mouse.button === Qt.MiddleButton\)/ { capture = 1 }
+    capture && /else if/ { exit }
+    capture { print }' <<<"$compact_body")
+assert grep -Fq 'if (!root.loading)' <<<"$middle_body"
+assert grep -Fq 'root.refresh()' <<<"$middle_body"
+assert grep -Fq 'root.expanded = !root.expanded' <<<"$compact_body"
 
 qml_test_runner=/usr/lib/qt6/bin/qmltestrunner
 [[ -x $qml_test_runner ]] || qml_test_runner=$(command -v qmltestrunner || true)
@@ -825,7 +844,7 @@ $display_functions
             var entry = tooltipFixture()
             compare(tooltipTitle(entry), "Codex · fixture@example.com")
             compare(tooltipLines(entry, Date.parse("2026-09-21T12:00:00Z")).join("\u005cn"),
-                "5-hour: 46% used · resets in 1h 50m\u005cnWeekly: 31% used · resets in 2d 0h\u005cnChecked fixture time")
+                "5-hour: 46% used · resets in 1h 50m\u005cnWeekly: 31% used · resets in 2d 0h\u005cnChecked fixture time\u005cnMiddle-click to refresh")
         }
 
         function test_tooltip_missing_reset_and_unknown_window() {
@@ -833,9 +852,9 @@ $display_functions
             var entry = tooltipFixture()
             entry.primaryResetsAt = null
             entry.secondaryPercentLeft = null
-            compare(tooltipLines(entry, 0).join("\u005cn"), "5-hour: 46% used")
+            compare(tooltipLines(entry, 0).join("\u005cn"), "5-hour: 46% used\u005cnMiddle-click to refresh")
             entry.primaryResetsAt = "invalid"
-            compare(tooltipLines(entry, 0).join("\u005cn"), "5-hour: 46% used")
+            compare(tooltipLines(entry, 0).join("\u005cn"), "5-hour: 46% used\u005cnMiddle-click to refresh")
         }
 
         function test_tooltip_stale_and_cached() {
@@ -854,25 +873,60 @@ $display_functions
             entries = []; generatedAt = "fixture time"; loading = true; errorMessage = "Fetch failed"
             var entry = tooltipFixture()
             entry.errorMessage = "Sign in to Codex"; entry.signedOut = true
-            compare(tooltipLines(entry, 0).join("\u005cn"), "Fetch failed\u005cnSign in to Codex\u005cnRefreshing…")
+            compare(tooltipLines(entry, 0).join("\u005cn"), "Fetch failed\u005cnSign in to Codex\u005cnRefreshing…\u005cnMiddle-click to refresh")
             entry.signedOut = false; entry.errorMessage = "Provider failed"
             loading = false; errorMessage = ""
-            compare(tooltipLines(entry, 0).join("\u005cn"), "Provider failed\u005cnChecked fixture time")
+            compare(tooltipLines(entry, 0).join("\u005cn"), "Provider failed\u005cnChecked fixture time\u005cnMiddle-click to refresh")
             entry.errorMessage = ""; loading = true
-            compare(tooltipLines(entry, 0).slice(-1)[0], "Refreshing…")
+            compare(tooltipLines(entry, 0).slice(-2)[0], "Refreshing…")
             loading = false
         }
 
         function test_tooltip_no_entry() {
             entries = []; loading = false; errorMessage = ""; generatedAt = ""
             compare(tooltipTitle(null), "KodexBar")
-            compare(tooltipLines(null, 0).join("\u005cn"), "No data")
+            compare(tooltipLines(null, 0).join("\u005cn"), "No data\u005cnMiddle-click to refresh")
             loading = true
-            compare(tooltipLines(null, 0).join("\u005cn"), "Loading\u005cnRefreshing…")
+            compare(tooltipLines(null, 0).join("\u005cn"), "Loading\u005cnRefreshing…\u005cnMiddle-click to refresh")
             loading = false
             entries = [{ provider: "codex", account: "hidden" }]
             hiddenAccounts = [hiddenAccountKey(entries[0])]
-            compare(tooltipLines(null, 0).join("\u005cn"), "All accounts are hidden.")
+            compare(tooltipLines(null, 0).join("\u005cn"), "All accounts are hidden.\u005cnMiddle-click to refresh")
+            entries = []; hiddenAccounts = []
+        }
+
+        function test_cycled_entry_key_data() {
+            return [
+                { tag: "forward", count: 3, current: 0, step: 1, expected: 1 },
+                { tag: "backward", count: 3, current: 2, step: -1, expected: 1 },
+                { tag: "wrap-forward", count: 3, current: 2, step: 1, expected: 0 },
+                { tag: "wrap-backward", count: 3, current: 0, step: -1, expected: 2 },
+                { tag: "missing-forward", count: 3, current: -1, step: 1, expected: 0 },
+                { tag: "missing-backward", count: 3, current: -1, step: -1, expected: 2 },
+                { tag: "single-forward", count: 1, current: 0, step: 1, expected: 0 },
+                { tag: "single-backward", count: 1, current: 0, step: -1, expected: 0 },
+                { tag: "empty", count: 0, current: -1, step: 1, expected: -1 }
+            ]
+        }
+
+        function test_cycled_entry_key(data) {
+            var pool = []
+            for (var i = 0; i < data.count; i++) pool.push(usable("account-" + i, 0))
+            var before = JSON.stringify(pool)
+            var current = data.current < 0 ? "missing" : entryKey(pool[data.current])
+            compare(cycledEntryKey(pool, current, data.step),
+                data.expected < 0 ? "" : entryKey(pool[data.expected]))
+            compare(JSON.stringify(pool), before)
+        }
+
+        function test_tooltip_shortcut_hint() {
+            loading = false; errorMessage = ""; generatedAt = ""; hiddenAccounts = []
+            var first = usable("first", 0), stale = usable("stale", 0)
+            stale.stale = true
+            entries = [first, stale, { provider: "claude", errorMessage: "Failed" }]
+            compare(tooltipLines(first, 0).slice(-1)[0], "Middle-click to refresh · Scroll to switch account")
+            hiddenAccounts = [hiddenAccountKey(stale)]
+            compare(tooltipLines(first, 0).slice(-1)[0], "Middle-click to refresh")
             entries = []; hiddenAccounts = []
         }
 

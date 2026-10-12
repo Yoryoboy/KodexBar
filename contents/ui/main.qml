@@ -95,6 +95,10 @@ PlasmoidItem {
         if (state.length > 0) {
             lines.push(state)
         }
+        var usable = visibleEntries().filter(function(candidate) { return isUsableEntry(candidate) })
+        lines.push(usable.length >= 2
+            ? i18n("Middle-click to refresh · Scroll to switch account")
+            : i18n("Middle-click to refresh"))
         return lines
     }
 
@@ -103,6 +107,25 @@ PlasmoidItem {
             return ""
         }
         return String(entry.provider || "provider") + "|" + String(entry.account || "") + "|" + String(entry.source || "")
+    }
+
+    // Missing current keys sit before the first entry: forward selects the first,
+    // backward selects the last. The pool (including stale usable data) is unchanged.
+    function cycledEntryKey(pool, currentKey, step) {
+        if (pool.length === 0) {
+            return ""
+        }
+        var index = -1
+        for (var i = 0; i < pool.length; i++) {
+            if (entryKey(pool[i]) === currentKey) {
+                index = i
+                break
+            }
+        }
+        if (index < 0) {
+            return entryKey(pool[step > 0 ? 0 : pool.length - 1])
+        }
+        return entryKey(pool[(index + step + pool.length) % pool.length])
     }
 
     // Copy missing usable entries without mutating either input. Their age is
@@ -1664,7 +1687,49 @@ PlasmoidItem {
         id: compact
         Layout.minimumWidth: compactRow.implicitWidth + Kirigami.Units.smallSpacing * 2
         Layout.minimumHeight: Kirigami.Units.iconSizes.smallMedium
-        onClicked: root.expanded = !root.expanded
+        acceptedButtons: Qt.LeftButton | Qt.MiddleButton
+        property int wheelAccumulator: 0
+
+        onClicked: (mouse) => {
+            if (mouse.button === Qt.MiddleButton) {
+                // Unlike the explicit Refresh action, never restart an in-flight query.
+                if (!root.loading) {
+                    root.refresh()
+                }
+            } else if (mouse.button === Qt.LeftButton) {
+                root.expanded = !root.expanded
+            }
+        }
+
+        onWheel: (wheel) => {
+            var pool = root.visibleEntries().filter(function(entry) { return root.isUsableEntry(entry) })
+            if (pool.length < 2) {
+                wheelAccumulator = 0
+                return
+            }
+            // Prefer vertical motion when both axes are supplied; horizontal-only
+            // wheels use x. Discard a partial step when direction reverses.
+            var delta = wheel.angleDelta.y !== 0 ? wheel.angleDelta.y : wheel.angleDelta.x
+            if (delta === 0) {
+                return
+            }
+            if (wheelAccumulator * delta < 0) {
+                wheelAccumulator = 0
+            }
+            wheelAccumulator += delta
+            while (Math.abs(wheelAccumulator) >= 120) {
+                var step = wheelAccumulator > 0 ? 1 : -1
+                var key = root.cycledEntryKey(pool, root.entryKey(root.compactEntry()), step)
+                for (var i = 0; i < pool.length; i++) {
+                    if (root.entryKey(pool[i]) === key) {
+                        root.clickEntry(pool[i])
+                        break
+                    }
+                }
+                wheelAccumulator -= step * 120
+            }
+            wheel.accepted = true
+        }
 
         RowLayout {
             id: compactRow

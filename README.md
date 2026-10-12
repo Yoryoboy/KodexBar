@@ -128,7 +128,9 @@ This variable selects only the executable to run; it does not configure an endpo
 ## Usage
 
 - Hover over the panel item to see the compact account's provider and email, primary/secondary window usage and known reset countdowns, stale/cached freshness, and the global refresh status or last checked time (including providers not updated). Provider errors replace window usage lines; a global error appears first. The hover tooltip always shows the account email, regardless of **Show email in widget**, which controls only the popup.
-- Click the panel item to open the popup.
+- Left-click the panel item to open or close the popup.
+- Middle-click the panel item to refresh immediately; clicks during an in-progress refresh are ignored.
+- Scroll vertically or horizontally over the panel item to switch and pin accounts, just like clicking a popup card. Positive wheel steps select the next account; negative steps select the previous, wrapping at either end. Cycling includes all visible usable accounts, even stale ones, and does nothing with fewer than two. If the current account is absent, the next step selects the first account and the previous step selects the last.
 - Click a provider/account card to pin it to the compact panel label; the newest active account is used until you click one.
 - Right-click a provider/account card and choose **Hide account** to hide it persistently. This is display-only: the wrapper still queries the account. Restore it in widget **Settings → Hidden accounts → Show**. When all accounts are hidden, the popup shows “All accounts are hidden.” and a **Show hidden accounts…** shortcut to widget settings.
 - Use the refresh button in the popup to query the CLI immediately.
