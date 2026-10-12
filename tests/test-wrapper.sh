@@ -536,11 +536,29 @@ assert grep -q 'property string pinnedEntryKey' "$root/contents/ui/main.qml"
 assert grep -q 'function clickEntry' "$root/contents/ui/main.qml"
 assert grep -q 'function pinnedEntry' "$root/contents/ui/main.qml"
 assert grep -q 'function clearMissingPin' "$root/contents/ui/main.qml"
-assert grep -q 'onClicked: root.clickEntry(modelData)' "$root/contents/ui/main.qml"
+assert grep -q 'acceptedButtons: Qt.LeftButton | Qt.RightButton' "$root/contents/ui/main.qml"
+assert grep -q 'if (mouse.button === Qt.RightButton)' "$root/contents/ui/main.qml"
+assert grep -q 'accountMenu.popup()' "$root/contents/ui/main.qml"
+assert grep -q 'root.clickEntry(modelData)' "$root/contents/ui/main.qml"
+assert grep -q 'QQC2.Menu {' "$root/contents/ui/main.qml"
+assert grep -q 'text: i18n("Hide account")' "$root/contents/ui/main.qml"
+assert grep -q 'onTriggered: root.hideEntry(modelData)' "$root/contents/ui/main.qml"
+assert grep -q 'Plasmoid.configuration.hiddenAccounts = withHiddenAccount(hiddenAccounts, hiddenAccountKey(entry))' "$root/contents/ui/main.qml"
 assert grep -q 'clearMissingPin()' "$root/contents/ui/main.qml"
 if grep -q 'onClicked: root.selectedEntryKey = root.entryKey(modelData)' "$root/contents/ui/main.qml"; then
     fail 'card clicks no longer pin the compact account'
 fi
+
+# Persistent hide preferences and settings restore wiring.
+assert grep -q '<entry name="hiddenAccounts" type="StringList">' "$root/contents/config/main.xml"
+assert grep -q 'property var cfg_hiddenAccounts' "$root/contents/ui/config/configGeneral.qml"
+assert grep -q 'property var cfg_hiddenAccountsDefault' "$root/contents/ui/config/configGeneral.qml"
+assert grep -q 'text: i18n("Hidden accounts")' "$root/contents/ui/config/configGeneral.qml"
+assert grep -q 'model: page.cfg_hiddenAccounts || \[\]' "$root/contents/ui/config/configGeneral.qml"
+assert grep -q 'text: i18n("Show")' "$root/contents/ui/config/configGeneral.qml"
+assert grep -q 'onClicked: page.showHiddenAccount(modelData)' "$root/contents/ui/config/configGeneral.qml"
+assert grep -q 'cfg_hiddenAccounts = (cfg_hiddenAccounts || \[\]).filter' "$root/contents/ui/config/configGeneral.qml"
+assert grep -q 'No hidden accounts. Right-click a card in the popup to hide it.' "$root/contents/ui/config/configGeneral.qml"
 
 # NaN cloud quota rendering: the popup must prefer the helper's per-model quota
 # payload, keep the CLI token fallback, and label the period explicitly instead
@@ -577,7 +595,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -648,6 +666,11 @@ Item {
     property string selectedSource: "detect"
     property string selectedEntryKey: ""
     property string pinnedEntryKey: ""
+    property var hiddenAccounts: []
+    property bool loading: false
+    property bool showProviderInPanel: true
+    property bool showUsedPercentInPanel: true
+    property bool showCreditsInPanel: true
 
     // Mirrors the card row in main.qml: a ColumnLayout constrains the card
     // GridLayout to the popup inner width, the grid may shrink below its preferred
@@ -697,6 +720,7 @@ $display_functions
             selectedSource = "detect"
             selectedEntryKey = ""
             pinnedEntryKey = ""
+            hiddenAccounts = []
         }
 
         function entry(provider, account) {
@@ -720,6 +744,78 @@ $display_functions
                 lastActivityAt: lastActivityAt || "",
                 errorMessage: ""
             }
+        }
+
+        function test_user_hidden_account_in_aggregate() {
+            entries = [entry("codex", "a"), entry("codex", "b"), entry("claude")]
+            hiddenAccounts = ["codex|a"]
+            compare(visibleEntries().length, 2)
+            compare(visibleEntries()[0].account, "b")
+        }
+
+        function test_user_hidden_account_in_explicit_view() {
+            selectedProvider = "codex"
+            entries = [entry("codex", "a"), entry("codex", "b")]
+            hiddenAccounts = ["codex|a"]
+            compare(visibleEntries().length, 1)
+            compare(visibleEntries()[0].account, "b")
+        }
+
+        function test_hidden_key_ignores_source_and_provider_case() {
+            var account = { provider: "CoDeX", account: " a ", source: "oauth" }
+            compare(hiddenAccountKey(account), "codex|a")
+            compare(hiddenAccountKey(null), "")
+            compare(hiddenAccountKey(entry("codex")), "codex|")
+            hiddenAccounts = ["codex|a"]
+            verify(isHiddenEntry(account))
+            verify(isHiddenEntry(entry("codex", "a")))
+            verify(!isHiddenEntry(entry("claude", "a")))
+            verify(!isHiddenEntry(null))
+        }
+
+        function test_user_hiding_all_does_not_resurrect_cards() {
+            entries = [entry("codex", "a"), entry("deepseek")]
+            hiddenAccounts = ["codex|a", "deepseek|"]
+            selectedEntryKey = entryKey(entries[0])
+            compare(visibleEntries().length, 0)
+            keepSelectionValid()
+            compare(selectedEntryKey, "")
+            compare(selectedEntry(), null)
+            compare(compactEntry(), null)
+            compare(panelText(), "No data")
+            selectedProvider = "codex"
+            compare(visibleEntries().length, 0)
+            compare(panelText(), "No data")
+        }
+
+        function test_user_hidden_deepseek_never_returns_in_fallback() {
+            entries = [entry("deepseek")]
+            hiddenAccounts = ["deepseek|"]
+            compare(visibleEntries().length, 0)
+        }
+
+        function test_user_hidden_pin_clears_and_compact_falls_back() {
+            entries = [usageEntry("codex", "a", 40, ""), usageEntry("codex", "b", 20, "")]
+            clickEntry(entries[0])
+            hiddenAccounts = ["codex|a"]
+            clearMissingPin()
+            keepSelectionValid()
+            compare(pinnedEntryKey, "")
+            compare(compactEntry().account, "b")
+            compare(selectedEntry().account, "b")
+        }
+
+        function test_hidden_list_helpers_copy_dedupe_and_remove() {
+            var original = ["codex|a", "claude|b"]
+            compare(withHiddenAccount(original, "codex|a"), original)
+            compare(withHiddenAccount(original, ""), original)
+            compare(withHiddenAccount(original, "codex|b"), ["codex|a", "claude|b", "codex|b"])
+            compare(withoutHiddenAccount(original, "codex|a"), ["claude|b"])
+            compare(withoutHiddenAccount(["codex|a", "codex|a"], "codex|a"), [])
+            compare(withoutHiddenAccount(original, "missing"), original)
+            verify(withHiddenAccount(original, "") !== original)
+            verify(withoutHiddenAccount(original, "missing") !== original)
+            compare(original, ["codex|a", "claude|b"])
         }
 
         function test_cached_labels_use_local_time_for_any_provider() {

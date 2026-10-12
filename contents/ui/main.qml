@@ -31,6 +31,7 @@ PlasmoidItem {
     property bool includeStatus: Plasmoid.configuration.includeStatus === undefined ? false : Plasmoid.configuration.includeStatus
     property bool showCostSummary: Plasmoid.configuration.showCostSummary === undefined ? true : Plasmoid.configuration.showCostSummary
     property int refreshSeconds: Math.max(10, Plasmoid.configuration.refreshInterval || 60)
+    property var hiddenAccounts: Plasmoid.configuration.hiddenAccounts || []
     property string selectedEntryKey: ""
     // Explicit card clicks keep their own state: automatic newest-activity
     // selection must never read as a manual choice. The pin lasts for the widget
@@ -43,8 +44,9 @@ PlasmoidItem {
         if (errorMessage.length > 0) {
             return errorMessage
         }
-        if (entries.length > 0 && entries[0].signedOut) {
-            return entries[0].errorMessage
+        var entry = compactEntry()
+        if (entry && entry.signedOut) {
+            return entry.errorMessage
         }
         return panelText()
     }
@@ -54,6 +56,34 @@ PlasmoidItem {
             return ""
         }
         return String(entry.provider || "provider") + "|" + String(entry.account || "") + "|" + String(entry.source || "")
+    }
+
+    function hiddenAccountKey(entry) {
+        if (!entry) {
+            return ""
+        }
+        return String(entry.provider || "").trim().toLowerCase() + "|" + String(entry.account || "").trim()
+    }
+
+    function hideEntry(entry) {
+        Plasmoid.configuration.hiddenAccounts = withHiddenAccount(hiddenAccounts, hiddenAccountKey(entry))
+    }
+
+    function isHiddenEntry(entry) {
+        var key = hiddenAccountKey(entry)
+        return key.length > 0 && hiddenAccounts.indexOf(key) !== -1
+    }
+
+    function withHiddenAccount(list, key) {
+        var result = (list || []).slice()
+        if (key && result.indexOf(key) === -1) {
+            result.push(key)
+        }
+        return result
+    }
+
+    function withoutHiddenAccount(list, key) {
+        return (list || []).filter(function(value) { return value !== key })
     }
 
     // The aggregate popup (the default "detect"/"detect" query) receives every
@@ -67,31 +97,32 @@ PlasmoidItem {
     }
 
     function visibleEntries() {
+        var unhidden = entries.filter(function(entry) { return !isHiddenEntry(entry) })
         if (!isAggregateView()) {
-            return entries
+            return unhidden
         }
         var codex = []
         var claude = []
         var rest = []
-        for (var i = 0; i < entries.length; i++) {
-            var provider = String(entries[i] && entries[i].provider || "").toLowerCase()
+        for (var i = 0; i < unhidden.length; i++) {
+            var provider = String(unhidden[i] && unhidden[i].provider || "").toLowerCase()
             if (provider === "deepseek") {
                 continue
             }
             if (provider === "codex") {
-                codex.push(entries[i])
+                codex.push(unhidden[i])
             } else if (provider === "claude") {
-                claude.push(entries[i])
+                claude.push(unhidden[i])
             } else {
-                rest.push(entries[i])
+                rest.push(unhidden[i])
             }
         }
         // Claude follows the Codex account cards and precedes the remaining providers,
         // which keeps the aggregate payload order otherwise intact.
         var ordered = codex.concat(claude, rest)
-        // Never hide every card: when only DeepSeek data is present, show it rather
-        // than leaving an empty row with no selectable card.
-        return ordered.length > 0 ? ordered : entries
+        // Only the DeepSeek display rule may fall back; user-hidden accounts
+        // must never be resurrected, even when every account is hidden.
+        return ordered.length > 0 ? ordered : unhidden
     }
 
     function selectedEntry() {
@@ -1563,8 +1594,22 @@ PlasmoidItem {
 
                         MouseArea {
                             anchors.fill: parent
-                            onClicked: root.clickEntry(modelData)
+                            acceptedButtons: Qt.LeftButton | Qt.RightButton
+                            onClicked: function(mouse) {
+                                if (mouse.button === Qt.RightButton) {
+                                    accountMenu.popup()
+                                } else {
+                                    root.clickEntry(modelData)
+                                }
+                            }
                             cursorShape: Qt.PointingHandCursor
+                        }
+                        QQC2.Menu {
+                            id: accountMenu
+                            QQC2.MenuItem {
+                                text: i18n("Hide account")
+                                onTriggered: root.hideEntry(modelData)
+                            }
                         }
                         ColumnLayout {
                             anchors.fill: parent
@@ -2130,6 +2175,10 @@ PlasmoidItem {
         onTriggered: root.refresh()
     }
 
+    onHiddenAccountsChanged: {
+        clearMissingPin()
+        keepSelectionValid()
+    }
     onEntriesChanged: {
         keepSelectionValid()
         clearMissingPin()
