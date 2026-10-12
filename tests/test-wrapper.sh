@@ -550,6 +550,17 @@ out=$("$wrapper" usage --format json --json-only)
 assert_json 'all(.[]; (.activity == null) or (.provider != "opencodego"))' "$out"
 unset KODEXBAR_CODEX_ACCOUNT_HOMES XDG_DATA_HOME
 
+# Refresh lifecycle wiring complements the extracted pure-function tests.
+assert grep -q 'id: refreshWatchdog' "$root/contents/ui/main.qml"
+watchdog_body=$(grep -A4 'id: refreshWatchdog' "$root/contents/ui/main.qml")
+assert grep -q 'interval: 300000' <<<"$watchdog_body"
+assert grep -q 'repeat: false' <<<"$watchdog_body"
+assert grep -q 'onTriggered: root.abortRefresh()' <<<"$watchdog_body"
+assert grep -q 'onTriggered: root.refresh(false)' "$root/contents/ui/main.qml"
+assert grep -q 'interval: root.backoffIntervalSeconds(root.refreshSeconds, root.consecutiveFailures) \* 1000' "$root/contents/ui/main.qml"
+assert grep -q 'root.consecutiveFailures = 0' "$root/contents/ui/main.qml"
+assert grep -q 'visible: root.errorMessage.length > 0' "$root/contents/ui/main.qml"
+
 assert grep -q 'function providerAccountKey' "$root/contents/ui/main.qml"
 assert grep -q 'keys.sort()' "$root/contents/ui/main.qml"
 assert grep -q 'entry.creditsRemaining > 0' "$root/contents/ui/main.qml"
@@ -655,7 +666,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -773,6 +784,32 @@ Item {
 $display_functions
     TestCase {
         name: "aggregateCardDisplay"
+
+        function test_refresh_backoff() {
+            compare(backoffIntervalSeconds(300, 0), 300)
+            compare(backoffIntervalSeconds(300, 1), 600)
+            compare(backoffIntervalSeconds(300, 2), 1200)
+            compare(backoffIntervalSeconds(300, 3), 1800)
+            compare(backoffIntervalSeconds(10, 9), 80)
+            compare(backoffIntervalSeconds(3600, 3), 3600)
+            compare(backoffIntervalSeconds(300, 0), 300) // success resets the count
+        }
+
+        function test_timed_refresh_guard() {
+            compare(shouldSkipTimedRefresh(true), true)
+            compare(shouldSkipTimedRefresh(false), false)
+        }
+
+        function test_failed_refresh_keeps_only_previous_usable_entries() {
+            var good = [{ rows: [{ title: "Session" }], creditsRemaining: null,
+                codeReviewRemainingPercent: null, errorMessage: "" }]
+            var failed = [{ errorMessage: "offline" }]
+            compare(resolveFailedRefresh(good, failed), good)
+            compare(resolveFailedRefresh([], failed), failed)
+            compare(resolveFailedRefresh(failed, []), [])
+            compare(good.length, 1)
+            compare(failed.length, 1)
+        }
 
         function init() {
             entries = []

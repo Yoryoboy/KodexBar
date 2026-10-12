@@ -135,6 +135,8 @@ This variable selects only the executable to run; it does not configure an endpo
 - Leave Provider as `Best available` if you want KodexBar to find the first usable Linux-capable provider/source combination.
 - Choose `All enabled` to ask the CLI for all providers enabled in `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`.
 
+Periodic refreshes never overlap: a timer tick is skipped while usage is loading. Settings changes restart the query; the Refresh button stays disabled while loading. A five-minute watchdog disconnects timed-out queries. Refreshes ending without usable usage data back off by ×2, ×4, then ×8 (capped at 30 minutes, never below the configured interval); a successful refresh resets the cadence. Failures keep the last usable cards and show an error banner above them. Codex sign-out remains an actionable sign-in card, not a transient failure.
+
 The popup renders common CodexBar CLI fields:
 
 - session, weekly, tertiary, and extra rate-limit windows

@@ -14,6 +14,7 @@ PlasmoidItem {
     property string errorDetail: ""
     property string generatedAt: ""
     property bool loading: false
+    property int consecutiveFailures: 0
     property bool costLoading: false
     property string costErrorMessage: ""
     property var costSummaries: ({})
@@ -689,7 +690,48 @@ PlasmoidItem {
         return "'" + String(value).replace(/'/g, "'\\''") + "'"
     }
 
-    function refresh() {
+    function backoffIntervalSeconds(baseSeconds, failures) {
+        return Math.max(baseSeconds, Math.min(1800, baseSeconds * Math.pow(2, Math.min(Math.max(0, failures), 3))))
+    }
+
+    function shouldSkipTimedRefresh(isLoading) {
+        return isLoading
+    }
+
+    function resolveFailedRefresh(previousEntries, failedEntries) {
+        return hasUsableEntries(previousEntries) ? previousEntries : failedEntries
+    }
+
+    function finishFailedRefresh(message, detail) {
+        refreshWatchdog.stop()
+        loading = false
+        consecutiveFailures += 1
+        var hadUsableEntries = hasUsableEntries(entries)
+        entries = resolveFailedRefresh(entries, failedCandidates)
+        if (!hadUsableEntries) {
+            generatedAt = new Date().toLocaleString(Qt.locale(), Locale.ShortFormat)
+        }
+        errorMessage = message
+        errorDetail = detail
+    }
+
+    function abortRefresh() {
+        if (!loading) {
+            return
+        }
+        executable.connectedSources = []
+        costExecutable.connectedSources = []
+        costLoading = false
+        pendingCandidates = []
+        finishFailedRefresh(i18n("Refresh timed out"), i18n("The refresh exceeded five minutes. Last available usage is shown."))
+    }
+
+    // Explicit calls restart; only periodic calls pass false.
+    function refresh(force) {
+        if (force === false && shouldSkipTimedRefresh(loading)) {
+            return
+        }
+        refreshWatchdog.restart()
         loading = true
         errorMessage = ""
         errorDetail = ""
@@ -777,13 +819,8 @@ PlasmoidItem {
 
     function tryNextCandidate() {
         if (pendingCandidates.length === 0) {
-            loading = false
-            entries = failedCandidates
-            generatedAt = new Date().toLocaleString(Qt.locale(), Locale.ShortFormat)
-            if (entries.length === 0) {
-                errorMessage = i18n("No usable CodexBar provider found")
-                errorDetail = i18n("Configure a Linux-capable provider or choose a specific provider/source.")
-            }
+            finishFailedRefresh(i18n("No usable CodexBar provider found"),
+                i18n("Configure a Linux-capable provider or choose a specific provider/source."))
             return
         }
 
@@ -839,6 +876,7 @@ PlasmoidItem {
             entry.signedOut = true
             entry.errorKind = "authentication"
             entry.errorMessage = i18n("Codex is installed, but the client is signed out. Run \"codex login\" in a terminal, then refresh.")
+            refreshWatchdog.stop()
             loading = false
             errorMessage = ""
             errorDetail = ""
@@ -1564,6 +1602,14 @@ PlasmoidItem {
             anchors.margins: full.popupMargin
             spacing: Kirigami.Units.largeSpacing
 
+            PlasmaComponents.Label {
+                visible: root.errorMessage.length > 0
+                text: root.errorDetail.length > 0 ? root.errorMessage + "\n" + root.errorDetail : root.errorMessage
+                color: Kirigami.Theme.negativeTextColor
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
             GridLayout {
                 id: accountCards
                 Layout.fillWidth: true
@@ -1669,14 +1715,6 @@ PlasmoidItem {
 
             Kirigami.Separator {
                 visible: root.visibleEntries().length > 0
-                Layout.fillWidth: true
-            }
-
-            PlasmaComponents.Label {
-                visible: root.errorMessage.length > 0
-                text: root.errorDetail.length > 0 ? root.errorMessage + "\n" + root.errorDetail : root.errorMessage
-                color: Kirigami.Theme.negativeTextColor
-                wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }
 
@@ -2104,6 +2142,9 @@ PlasmoidItem {
         id: executable
         engine: "executable"
         onNewData: function(sourceName, data) {
+            if (!root.loading || connectedSources.indexOf(sourceName) === -1) {
+                return
+            }
             disconnectSource(sourceName)
             if (data["exit code"] && data["exit code"] !== 0 && !(data.stdout || "").length) {
                 var errorEntry = root.normalizeEntry({
@@ -2135,12 +2176,14 @@ PlasmoidItem {
             if (!result.usable && root.stopForCodexAuthentication(result.entries)) {
                 return
             }
-            if (!result.usable && root.pendingCandidates.length > 0) {
+            if (!result.usable) {
                 root.appendFailedEntries(result.entries)
                 root.tryNextCandidate()
                 return
             }
+            refreshWatchdog.stop()
             root.loading = false
+            root.consecutiveFailures = 0
             root.errorMessage = ""
             root.errorDetail = ""
             root.generatedAt = new Date().toLocaleString(Qt.locale(), Locale.ShortFormat)
@@ -2156,6 +2199,9 @@ PlasmoidItem {
         id: costExecutable
         engine: "executable"
         onNewData: function(sourceName, data) {
+            if (connectedSources.indexOf(sourceName) === -1) {
+                return
+            }
             disconnectSource(sourceName)
             root.costLoading = false
             if (data["exit code"] && data["exit code"] !== 0 && !(data.stdout || "").length) {
@@ -2178,12 +2224,19 @@ PlasmoidItem {
     }
 
     Timer {
+        id: refreshWatchdog
+        interval: 300000
+        repeat: false
+        onTriggered: root.abortRefresh()
+    }
+
+    Timer {
         id: refreshTimer
-        interval: root.refreshSeconds * 1000
+        interval: root.backoffIntervalSeconds(root.refreshSeconds, root.consecutiveFailures) * 1000
         repeat: true
         running: true
         triggeredOnStart: true
-        onTriggered: root.refresh()
+        onTriggered: root.refresh(false)
     }
 
     onHiddenAccountsChanged: {
