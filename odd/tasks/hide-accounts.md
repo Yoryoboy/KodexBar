@@ -35,6 +35,7 @@ User cancelled one Codex account and wants to hide it (and any future dead accou
 - Not verified: live Plasma interaction (context menu, settings restore). Requires install + plasmashell reload, user-authorized.
 
 - Native review `review-49170ab6be060824`: high tier, four lenses, approved; acknowledgement burned authority for target `sha256:59e9ce5bf4bf80d68e1b2bc503a1ac20ffcf6b6bb6f9d7d7ff2cd62222173f97`. Non-blocking advisory R3-001 (reliability, `tests/test-wrapper.sh:554-562`) kept as separate follow-up.
+- Deployment: `./install.sh` exit 0 (upgrade); installed `main.qml`, `configGeneral.qml`, `main.xml` byte-identical to source. User authorized Plasma restart: `systemctl --user restart plasma-plasmashell.service` exit 0, active, MainPID 1592 → 2361674; no KodexBar errors in the journal. Live interaction pending user confirmation.
 
 ## Next step
 
