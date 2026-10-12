@@ -28,6 +28,19 @@
     <entry name="showProviderInPanel" type="Bool">
       <default>true</default>
     </entry>
+    <entry name="colorPanelByUsage" type="Bool">
+      <default>true</default>
+    </entry>
+    <entry name="warningUsedPercent" type="Int">
+      <default>80</default>
+      <min>1</min>
+      <max>100</max>
+    </entry>
+    <entry name="criticalUsedPercent" type="Int">
+      <default>95</default>
+      <min>1</min>
+      <max>100</max>
+    </entry>
     <entry name="showEmailInWidget" type="Bool">
       <default>false</default>
     </entry>

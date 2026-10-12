@@ -166,6 +166,9 @@ KodexBar exposes these Plasma widget settings:
 | Show provider in panel | Include the reduced provider/account identity, such as `A<n>` for Codex or `C<n>` for Claude accounts, in the compact label. |
 | Show used percent in panel | Include both 5-hour and weekly used percentages when available. |
 | Show credits in panel | Include remaining credits only when a positive numeric balance is available. |
+| Colour panel label by usage | Enabled by default. Uses the highest used percentage of the compact label's primary/secondary windows: warning uses the theme's neutral colour, critical uses its negative colour. Stale entries keep their last-known usage colour; unknown/error entries use the default text colour. |
+| Warning at | Warning threshold, from 1 to 100%; default 80%. |
+| Critical at | Critical threshold, from 1 to 100%; default 95%. If lower than Warning, Warning is used as the effective critical threshold. |
 | Show email in widget | Show the account email inside the popup when available. |
 | Fetch provider status | Add `--status` to CLI calls and display incident/maintenance state. |
 | Hidden accounts | Lists accounts hidden from the popup and panel; choose **Show** to restore an account. Queries are unchanged. |

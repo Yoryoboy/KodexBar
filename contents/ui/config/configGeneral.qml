@@ -22,6 +22,12 @@ KCM.SimpleKCM {
     property bool cfg_showUsedPercentInPanelDefault
     property alias cfg_showProviderInPanel: showProviderInPanel.checked
     property bool cfg_showProviderInPanelDefault
+    property alias cfg_colorPanelByUsage: colorPanelByUsage.checked
+    property bool cfg_colorPanelByUsageDefault
+    property alias cfg_warningUsedPercent: warningUsedPercent.value
+    property int cfg_warningUsedPercentDefault
+    property alias cfg_criticalUsedPercent: criticalUsedPercent.value
+    property int cfg_criticalUsedPercentDefault
     property alias cfg_showEmailInWidget: showEmailInWidget.checked
     property bool cfg_showEmailInWidgetDefault
     property alias cfg_includeStatus: includeStatus.checked
@@ -208,6 +214,33 @@ KCM.SimpleKCM {
                 QQC2.CheckBox {
                     id: showCreditsInPanel
                     text: i18n("Show credits in panel")
+                }
+
+                QQC2.CheckBox {
+                    id: colorPanelByUsage
+                    text: i18n("Colour panel label by usage")
+                }
+
+                QQC2.SpinBox {
+                    id: warningUsedPercent
+                    Kirigami.FormData.label: i18n("Warning at:")
+                    from: 1
+                    to: 100
+                    enabled: colorPanelByUsage.checked
+                    textFromValue: function(value) { return i18n("%1%", value) }
+                    valueFromText: function(text) { return Number(text.replace(/\D/g, "")) }
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 10
+                }
+
+                QQC2.SpinBox {
+                    id: criticalUsedPercent
+                    Kirigami.FormData.label: i18n("Critical at:")
+                    from: 1
+                    to: 100
+                    enabled: colorPanelByUsage.checked
+                    textFromValue: function(value) { return i18n("%1%", value) }
+                    valueFromText: function(text) { return Number(text.replace(/\D/g, "")) }
+                    Layout.preferredWidth: Kirigami.Units.gridUnit * 10
                 }
 
                 QQC2.CheckBox {

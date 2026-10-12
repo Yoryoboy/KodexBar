@@ -28,6 +28,9 @@ PlasmoidItem {
     property bool showCreditsInPanel: Plasmoid.configuration.showCreditsInPanel === undefined ? true : Plasmoid.configuration.showCreditsInPanel
     property bool showUsedPercentInPanel: Plasmoid.configuration.showUsedPercentInPanel === undefined ? true : Plasmoid.configuration.showUsedPercentInPanel
     property bool showProviderInPanel: Plasmoid.configuration.showProviderInPanel === undefined ? true : Plasmoid.configuration.showProviderInPanel
+    property bool colorPanelByUsage: Plasmoid.configuration.colorPanelByUsage === undefined ? true : Plasmoid.configuration.colorPanelByUsage
+    property int warningUsedPercent: Plasmoid.configuration.warningUsedPercent === undefined ? 80 : Plasmoid.configuration.warningUsedPercent
+    property int criticalUsedPercent: Plasmoid.configuration.criticalUsedPercent === undefined ? 95 : Plasmoid.configuration.criticalUsedPercent
     property bool showEmailInWidget: Plasmoid.configuration.showEmailInWidget === undefined ? false : Plasmoid.configuration.showEmailInWidget
     property bool includeStatus: Plasmoid.configuration.includeStatus === undefined ? false : Plasmoid.configuration.includeStatus
     property bool showCostSummary: Plasmoid.configuration.showCostSummary === undefined ? true : Plasmoid.configuration.showCostSummary
@@ -631,6 +634,40 @@ PlasmoidItem {
             return null
         }
         return Math.max(0, Math.min(100, 100 - percentLeft))
+    }
+
+    function maxUsedPercent(entry) {
+        if (!entry) {
+            return null
+        }
+        // Match panelText: popup-only tertiary and extra windows are excluded.
+        var primary = usedPercent(entry.primaryPercentLeft)
+        var secondary = usedPercent(entry.secondaryPercentLeft)
+        if (primary === null) return secondary
+        if (secondary === null) return primary
+        return Math.max(primary, secondary)
+    }
+
+    function usageLevel(used, warning, critical) {
+        if (used === null || used === undefined || isNaN(used)) {
+            return "unknown"
+        }
+        critical = Math.max(warning, critical)
+        if (used >= critical) return "critical"
+        if (used >= warning) return "warning"
+        return "normal"
+    }
+
+    function compactLabelColor() {
+        var entry = compactEntry()
+        if (!colorPanelByUsage || !entry || entry.errorMessage) {
+            return Kirigami.Theme.textColor
+        }
+        // Stale entries retain the colour of their last known compact usage.
+        var level = usageLevel(maxUsedPercent(entry), warningUsedPercent, criticalUsedPercent)
+        if (level === "critical") return Kirigami.Theme.negativeTextColor
+        if (level === "warning") return Kirigami.Theme.neutralTextColor
+        return Kirigami.Theme.textColor
     }
 
     function formatUsedPercent(percentLeft, usageKnown) {
@@ -1599,6 +1636,7 @@ PlasmoidItem {
 
             PlasmaComponents.Label {
                 text: root.panelText()
+                color: root.compactLabelColor()
                 visible: text.length > 0
                 font.weight: Font.DemiBold
                 elide: Text.ElideRight

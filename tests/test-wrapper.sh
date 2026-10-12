@@ -678,7 +678,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -806,6 +806,38 @@ $display_functions
             return { provider: "codex", account: account, source: "cli",
                 rows: [{ title: "Session" }], creditsRemaining: null,
                 codeReviewRemainingPercent: null, fetchedAt: fetchedAt }
+        }
+
+        function test_usage_level_data() {
+            return [
+                { tag: "below-warning", used: 79, warning: 80, critical: 95, level: "normal" },
+                { tag: "warning", used: 80, warning: 80, critical: 95, level: "warning" },
+                { tag: "below-critical", used: 94, warning: 80, critical: 95, level: "warning" },
+                { tag: "critical", used: 95, warning: 80, critical: 95, level: "critical" },
+                { tag: "full", used: 100, warning: 80, critical: 95, level: "critical" },
+                { tag: "missing", used: null, warning: 80, critical: 95, level: "unknown" },
+                { tag: "nan", used: NaN, warning: 80, critical: 95, level: "unknown" },
+                { tag: "undefined", used: undefined, warning: 80, critical: 95, level: "unknown" },
+                { tag: "inverted-below", used: 79, warning: 80, critical: 60, level: "normal" },
+                { tag: "inverted-at", used: 80, warning: 80, critical: 60, level: "critical" }
+            ]
+        }
+
+        function test_usage_level(data) {
+            compare(usageLevel(data.used, data.warning, data.critical), data.level)
+        }
+
+        function test_max_used_percent() {
+            compare(maxUsedPercent({ primaryPercentLeft: 70, secondaryPercentLeft: 10 }), 90)
+            compare(maxUsedPercent({ primaryPercentLeft: 5, secondaryPercentLeft: 50 }), 95)
+            compare(maxUsedPercent({ primaryPercentLeft: 20 }), 80)
+            compare(maxUsedPercent({ primaryPercentLeft: null, secondaryPercentLeft: 30 }), 70)
+            compare(maxUsedPercent({ primaryPercentLeft: NaN, secondaryPercentLeft: 40 }), 60)
+            compare(maxUsedPercent({}), null)
+            compare(maxUsedPercent(null), null)
+            // Popup-only windows must not affect compact-label colour.
+            compare(maxUsedPercent({ primaryPercentLeft: 90, tertiaryPercentLeft: 0,
+                additionalRows: [{ percentLeft: 0 }] }), 10)
         }
 
         function test_carry_missing() {
@@ -1406,7 +1438,42 @@ else
     grep -q 'root.clickEntry(modelData)' "$root/contents/ui/main.qml" || fail 'card clicks no longer pin the compact account'
 fi
 
-# Only the refreshInterval entry should carry the new default.
+# Usage colour configuration and compact-label wiring.
+for setting in colorPanelByUsage warningUsedPercent criticalUsedPercent; do
+    config_entry=$(awk -v name="$setting" '$0 ~ "<entry name=\"" name "\"" {capture=1} capture{print} capture && /<\/entry>/{exit}' "$root/contents/config/main.xml")
+    if [[ $setting == colorPanelByUsage ]]; then
+        assert grep -q 'type="Bool"' <<<"$config_entry"
+        assert grep -q '<default>true</default>' <<<"$config_entry"
+    else
+        default=80
+        [[ $setting != criticalUsedPercent ]] || default=95
+        assert grep -q 'type="Int"' <<<"$config_entry"
+        assert grep -q "<default>$default</default>" <<<"$config_entry"
+        assert grep -q '<min>1</min>' <<<"$config_entry"
+        assert grep -q '<max>100</max>' <<<"$config_entry"
+    fi
+    assert grep -q "property alias cfg_$setting:" "$root/contents/ui/config/configGeneral.qml"
+    assert grep -q "property .* cfg_${setting}Default" "$root/contents/ui/config/configGeneral.qml"
+done
+assert grep -q 'color: root.compactLabelColor()' "$root/contents/ui/main.qml"
+assert grep -Fq 'text: i18n("Colour panel label by usage")' "$root/contents/ui/config/configGeneral.qml"
+for setting in warningUsedPercent criticalUsedPercent; do
+    control=$(grep -A9 "id: $setting" "$root/contents/ui/config/configGeneral.qml")
+    assert grep -q 'from: 1' <<<"$control"
+    assert grep -q 'to: 100' <<<"$control"
+    assert grep -q 'enabled: colorPanelByUsage.checked' <<<"$control"
+    assert grep -Fq 'i18n("%1%", value)' <<<"$control"
+done
+assert grep -Fq 'i18n("Warning at:")' "$root/contents/ui/config/configGeneral.qml"
+assert grep -Fq 'i18n("Critical at:")' "$root/contents/ui/config/configGeneral.qml"
+color_function=$(extract_function compactLabelColor)
+assert grep -q '!colorPanelByUsage || !entry || entry.errorMessage' <<<"$color_function"
+assert grep -q 'usageLevel(maxUsedPercent(entry), warningUsedPercent, criticalUsedPercent)' <<<"$color_function"
+assert grep -q 'Kirigami.Theme.neutralTextColor' <<<"$color_function"
+assert grep -q 'Kirigami.Theme.negativeTextColor' <<<"$color_function"
+assert grep -q 'Kirigami.Theme.textColor' <<<"$color_function"
+
+# Only the refreshInterval entry should carry the new refresh default.
 refresh_config=$(awk '/<entry name="refreshInterval"/{capture=1} capture{print} capture && /<\/entry>/{exit}' "$root/contents/config/main.xml")
 grep -q '<default>300</default>' <<<"$refresh_config" || fail 'refresh interval default is not 300 seconds'
 assert grep -q 'root.cachedLabel(modelData)' "$root/contents/ui/main.qml"
