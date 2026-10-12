@@ -59,6 +59,29 @@ PlasmoidItem {
         return String(entry.provider || "provider") + "|" + String(entry.account || "") + "|" + String(entry.source || "")
     }
 
+    // Copy missing usable entries without mutating either input. Their age is
+    // measured from the last successful fetch, never from the failed query.
+    function carryForwardEntries(previous, fresh, nowMs) {
+        var result = fresh.slice()
+        var keys = fresh.map(function(entry) { return entryKey(entry) })
+        for (var i = 0; i < previous.length; i++) {
+            var entry = previous[i]
+            if (!isUsableEntry(entry) || keys.indexOf(entryKey(entry)) !== -1) {
+                continue
+            }
+            var since = entry.staleSince !== undefined ? entry.staleSince : entry.fetchedAt
+            if (typeof since !== "number" || !isFinite(since) || nowMs - since > 24 * 60 * 60 * 1000) {
+                continue
+            }
+            var copy = Object.assign({}, entry)
+            copy.stale = true
+            copy.staleSince = since
+            result.push(copy)
+            keys.push(entryKey(entry))
+        }
+        return result
+    }
+
     function hiddenAccountKey(entry) {
         if (!entry) {
             return ""
@@ -182,8 +205,8 @@ PlasmoidItem {
 
     function isUsableEntry(entry) {
         return entry && !entry.errorMessage && ((entry.rows && entry.rows.length > 0)
-            || entry.creditsRemaining !== null
-            || entry.codeReviewRemainingPercent !== null)
+            || (entry.creditsRemaining !== null && entry.creditsRemaining !== undefined)
+            || (entry.codeReviewRemainingPercent !== null && entry.codeReviewRemainingPercent !== undefined))
     }
 
     function activityTime(entry) {
@@ -203,8 +226,14 @@ PlasmoidItem {
         if (isUsableEntry(pinned)) {
             return pinned
         }
+        // Automatic selection prefers fresh usable data; stale cards remain a
+        // fallback when none is fresh. An explicit usable pin still wins above.
+        var freshPool = pool.filter(function(entry) { return isUsableEntry(entry) && !entry.stale })
+        if (freshPool.length > 0) {
+            pool = freshPool
+        }
         var fallback = selectedEntry()
-        if (!isUsableEntry(fallback)) {
+        if (!isUsableEntry(fallback) || (freshPool.length > 0 && fallback.stale)) {
             fallback = null
             for (var i = 0; i < pool.length; i++) {
                 if (isUsableEntry(pool[i])) {
@@ -384,6 +413,11 @@ PlasmoidItem {
     }
 
     function cachedLabel(entry) {
+        if (entry && entry.stale) {
+            var since = new Date(entry.staleSince)
+            return isNaN(since.getTime()) ? ""
+                : i18n("Not updated since %1", since.toLocaleString(Qt.locale(), Locale.ShortFormat))
+        }
         if (!entry || !entry.cachedAt) {
             return ""
         }
@@ -393,6 +427,12 @@ PlasmoidItem {
     }
 
     function cachedDetailLabel(entry) {
+        if (entry && entry.stale) {
+            var since = new Date(entry.staleSince)
+            return isNaN(since.getTime()) ? ""
+                : i18n("This provider did not respond on the last refresh; showing data from %1",
+                    since.toLocaleString(Qt.locale(), Locale.ShortFormat))
+        }
         if (!entry || !entry.cachedAt) {
             return ""
         }
@@ -400,6 +440,22 @@ PlasmoidItem {
         return isNaN(date.getTime()) ? ""
             : i18n("Cached since %1 — Claude usage endpoint rate limited",
                 date.toLocaleString(Qt.locale(), Locale.ShortFormat))
+    }
+
+    function checkedLabel() {
+        var label = generatedAt.length > 0 ? i18n("Checked %1", generatedAt) : ""
+        var providers = []
+        var cards = visibleEntries()
+        for (var i = 0; i < cards.length; i++) {
+            if (cards[i].stale && providers.indexOf(cards[i].provider) === -1) {
+                providers.push(cards[i].provider)
+            }
+        }
+        if (providers.length > 0) {
+            label += (label.length > 0 ? " · " : "")
+                + i18np("%1 provider not updated", "%1 providers not updated", providers.length)
+        }
+        return label
     }
 
     // One card reserves an icon, a name line, an optional secondary line and one
@@ -1640,7 +1696,7 @@ PlasmoidItem {
                         color: selected ? Qt.rgba(Kirigami.Theme.highlightColor.r, Kirigami.Theme.highlightColor.g, Kirigami.Theme.highlightColor.b, 0.16) : Kirigami.Theme.backgroundColor
                         border.width: selected ? 1 : 0
                         border.color: Kirigami.Theme.highlightColor
-                        opacity: modelData.errorMessage ? 0.62 : 1
+                        opacity: modelData.errorMessage || modelData.stale ? 0.62 : 1
 
                         MouseArea {
                             anchors.fill: parent
@@ -2110,7 +2166,7 @@ PlasmoidItem {
 
             PlasmaComponents.Label {
                 visible: root.visibleEntries().length === 0
-                text: root.generatedAt.length > 0 ? i18n("Updated %1", root.generatedAt) : ""
+                text: root.checkedLabel()
                 color: Kirigami.Theme.disabledTextColor
                 font.pointSize: Kirigami.Theme.smallFont.pointSize
                 elide: Text.ElideRight
@@ -2122,10 +2178,17 @@ PlasmoidItem {
                 spacing: Kirigami.Units.smallSpacing
                 Item { Layout.fillWidth: true }
                 PlasmaComponents.Label {
-                    text: root.generatedAt.length > 0 ? i18n("Updated %1", root.generatedAt) : ""
+                    text: root.checkedLabel()
                     color: Kirigami.Theme.disabledTextColor
                     font.pointSize: Kirigami.Theme.smallFont.pointSize
                     elide: Text.ElideLeft
+                }
+                PlasmaComponents.BusyIndicator {
+                    running: root.loading && root.visibleEntries().length > 0
+                    // Reserve the slot while idle to avoid layout jumps.
+                    opacity: running ? 1 : 0
+                    Layout.preferredWidth: Kirigami.Units.iconSizes.small
+                    Layout.preferredHeight: Kirigami.Units.iconSizes.small
                 }
                 QQC2.ToolButton {
                     icon.name: "view-refresh"
@@ -2186,12 +2249,15 @@ PlasmoidItem {
             root.consecutiveFailures = 0
             root.errorMessage = ""
             root.errorDetail = ""
-            root.generatedAt = new Date().toLocaleString(Qt.locale(), Locale.ShortFormat)
+            var fetchedAt = Date.now()
+            root.generatedAt = new Date(fetchedAt).toLocaleString(Qt.locale(), Locale.ShortFormat)
             var updatedEntries = []
             for (var i = 0; i < result.entries.length; i++) {
-                updatedEntries.push(root.withCostSummary(result.entries[i]))
+                var entry = root.withCostSummary(result.entries[i])
+                entry.fetchedAt = fetchedAt
+                updatedEntries.push(entry)
             }
-            root.entries = updatedEntries
+            root.entries = root.carryForwardEntries(root.entries, updatedEntries, fetchedAt)
         }
     }
 
@@ -2253,9 +2319,18 @@ PlasmoidItem {
         refresh()
     }
 
-    onCodexbarCommandChanged: refresh()
-    onSelectedProviderChanged: refresh()
-    onSelectedSourceChanged: refresh()
+    onCodexbarCommandChanged: {
+        entries = []
+        refresh()
+    }
+    onSelectedProviderChanged: {
+        entries = []
+        refresh()
+    }
+    onSelectedSourceChanged: {
+        entries = []
+        refresh()
+    }
     onShowCostSummaryChanged: refreshCost()
     onShowCreditsInPanelChanged: panelText()
     onShowUsedPercentInPanelChanged: panelText()

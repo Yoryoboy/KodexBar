@@ -559,6 +559,18 @@ assert grep -q 'onTriggered: root.abortRefresh()' <<<"$watchdog_body"
 assert grep -q 'onTriggered: root.refresh(false)' "$root/contents/ui/main.qml"
 assert grep -q 'interval: root.backoffIntervalSeconds(root.refreshSeconds, root.consecutiveFailures) \* 1000' "$root/contents/ui/main.qml"
 assert grep -q 'root.consecutiveFailures = 0' "$root/contents/ui/main.qml"
+assert grep -q 'PlasmaComponents.BusyIndicator {' "$root/contents/ui/main.qml"
+assert grep -q 'running: root.loading && root.visibleEntries().length > 0' "$root/contents/ui/main.qml"
+assert grep -q 'i18n("Checked %1", generatedAt)' "$root/contents/ui/main.qml"
+assert grep -q 'root.entries = root.carryForwardEntries(root.entries, updatedEntries, fetchedAt)' "$root/contents/ui/main.qml"
+for handler in onCodexbarCommandChanged onSelectedProviderChanged onSelectedSourceChanged; do
+    handler_body=$(grep -A3 "$handler:" "$root/contents/ui/main.qml")
+    assert grep -q 'entries = \[\]' <<<"$handler_body"
+    assert grep -q 'refresh()' <<<"$handler_body"
+done
+if grep -q 'Updated %1' "$root/contents/ui/main.qml"; then
+    fail 'footer must say Checked, not Updated'
+fi
 assert grep -q 'visible: root.errorMessage.length > 0' "$root/contents/ui/main.qml"
 
 assert grep -q 'function providerAccountKey' "$root/contents/ui/main.qml"
@@ -666,7 +678,7 @@ extract_function() {
     ' "$root/contents/ui/main.qml"
 }
 display_functions=""
-for name in backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -739,6 +751,7 @@ Item {
     property string pinnedEntryKey: ""
     property var hiddenAccounts: []
     property bool loading: false
+    property string generatedAt: "now"
     property bool showProviderInPanel: true
     property bool showUsedPercentInPanel: true
     property bool showCreditsInPanel: true
@@ -781,9 +794,105 @@ Item {
         return value === undefined ? text : text.replace("%1", String(value))
     }
 
+    function i18np(single, plural, count) {
+        return i18n(count === 1 ? single : plural, count)
+    }
+
 $display_functions
     TestCase {
         name: "aggregateCardDisplay"
+
+        function usable(account, fetchedAt) {
+            return { provider: "codex", account: account, source: "cli",
+                rows: [{ title: "Session" }], creditsRemaining: null,
+                codeReviewRemainingPercent: null, fetchedAt: fetchedAt }
+        }
+
+        function test_carry_missing() {
+            var old = usable("old", 1000)
+            var fresh = [usable("new", 2000)]
+            var result = carryForwardEntries([old], fresh, 2000)
+            compare(result.length, 2)
+            compare(result[0], fresh[0])
+            verify(result[1].stale)
+            compare(result[1].staleSince, 1000)
+            verify(old.stale === undefined) // no input mutation
+            compare(fresh.length, 1)
+        }
+
+        function test_carry_fresh_wins() {
+            var old = usable("same", 1000)
+            old.stale = true
+            old.staleSince = 1000
+            var fresh = [usable("same", 3000)]
+            var result = carryForwardEntries([old], fresh, 3000)
+            compare(result.length, 1)
+            compare(result[0], fresh[0])
+            verify(!result[0].stale)
+        }
+
+        function test_carry_preserves_since_and_expires() {
+            var old = usable("old", 2000)
+            old.stale = true
+            old.staleSince = 1000
+            compare(carryForwardEntries([old], [], 3000)[0].staleSince, 1000)
+            compare(carryForwardEntries([old], [], 1000 + 86400000).length, 1)
+            compare(carryForwardEntries([old], [], 1001 + 86400000).length, 0)
+            compare(carryForwardEntries([usable("old", 1000)], [], 1001 + 86400000).length, 0)
+        }
+
+        function test_stale_labels_height_and_footer() {
+            var old = usable("old", 1000)
+            old.stale = true
+            old.staleSince = 1000
+            old.cachedAt = "2026-01-01T00:00:00Z"
+            var localTime = new Date(1000).toLocaleString(Qt.locale(), Locale.ShortFormat)
+            compare(cachedLabel(old), "Not updated since " + localTime)
+            compare(cachedDetailLabel(old), "This provider did not respond on the last refresh; showing data from " + localTime)
+            compare(cardSecondaryLines([old], false), 1)
+            compare(cardSecondaryLines([old], true), 2)
+            entries = [old]
+            compare(checkedLabel(), "Checked now · 1 provider not updated")
+            var other = usable("other", 1000)
+            other.stale = true
+            entries = [old, other]
+            compare(checkedLabel(), "Checked now · 1 provider not updated")
+            other.provider = "claude"
+            entries = [old, other]
+            compare(checkedLabel(), "Checked now · 2 providers not updated")
+            hiddenAccounts = [hiddenAccountKey(old), hiddenAccountKey(other)]
+            compare(checkedLabel(), "Checked now")
+        }
+
+        function test_carry_unusable_and_empty() {
+            compare(carryForwardEntries([{ errorMessage: "offline" }], [], 2000).length, 0)
+            compare(carryForwardEntries([{ rows: [], fetchedAt: 1000 }], [], 2000).length, 0)
+            compare(carryForwardEntries([usable("unknown", undefined)], [], 2000).length, 0)
+            compare(carryForwardEntries([usable("invalid", NaN)], [], 2000).length, 0)
+            var zeroBalance = { provider: "deepseek", creditsRemaining: 0, fetchedAt: 1000 }
+            compare(carryForwardEntries([zeroBalance], [], 2000).length, 1)
+            var fresh = [usable("fresh", 2000)]
+            compare(carryForwardEntries([], fresh, 2000), fresh)
+        }
+
+        function test_compact_prefers_fresh_unless_pinned() {
+            var stale = usable("stale", 1000)
+            stale.stale = true
+            stale.lastActivityAt = "2026-01-02T00:00:00Z"
+            var fresh = usable("fresh", 2000)
+            fresh.lastActivityAt = "2026-01-01T00:00:00Z"
+            entries = [stale, fresh]
+            selectedEntryKey = entryKey(stale)
+            pinnedEntryKey = ""
+            compare(compactEntry(), fresh)
+            fresh.lastActivityAt = ""
+            compare(compactEntry(), fresh)
+            pinnedEntryKey = entryKey(stale)
+            compare(compactEntry(), stale)
+            pinnedEntryKey = ""
+            entries = [stale]
+            compare(compactEntry(), stale)
+        }
 
         function test_refresh_backoff() {
             compare(backoffIntervalSeconds(300, 0), 300)
