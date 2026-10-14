@@ -263,6 +263,18 @@ unset FAKE_MODE
     assert test "$actual" = "$expected"
     assert test "$(<"$FAKE_CLAUDE_LOG")" = UNSET
 
+    # The widget settings prefix (see commandLine() in main.qml) adds its
+    # directories after an inherited KODEXBAR_CLAUDE_CONFIG_DIRS, or alone.
+    widget_command='KODEXBAR_CLAUDE_CONFIG_DIRS="${KODEXBAR_CLAUDE_CONFIG_DIRS-};"'\''~/.claude-work'\'' "$0" usage --format json --json-only'
+    : >"$FAKE_CLAUDE_LOG"
+    out=$(sh -c "$widget_command" "$wrapper")
+    assert_json '[.[] | select(.provider == "claude") | .account] == ["personal@example.com", "work@example.com"]' "$out"
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$(printf '%s\n' UNSET "$work")"
+    : >"$FAKE_CLAUDE_LOG"
+    out=$(KODEXBAR_CLAUDE_CONFIG_DIRS=$fallback sh -c "$widget_command" "$wrapper")
+    assert_json '[.[] | select(.provider == "claude") | .account] == ["personal@example.com", ".claude-missing", "work@example.com"]' "$out"
+    assert test "$(<"$FAKE_CLAUDE_LOG")" = "$(printf '%s\n' UNSET "$fallback" "$work")"
+
     export KODEXBAR_CLAUDE_CONFIG_DIRS="$duplicate;$fallback"
     out=$("$wrapper" usage --format json --json-only)
     assert_json '[.[] | select(.provider == "claude") | .account] == ["personal@example.com", ".claude-missing"]' "$out"
@@ -757,6 +769,106 @@ $candidate_source
 QML
     QT_QPA_PLATFORM=offscreen "$qml_test_runner" -input "$tmpdir/tst_candidates.qml" >"$tmpdir/qmltest.out" 2>&1 \
         || fail "candidateList regression failed: $(cat "$tmpdir/qmltest.out")"
+
+    # Claude config directories from the widget settings prefix the usage command
+    # so the aggregate sees them without a Plasma session environment variable.
+    command_functions=""
+    for name in shellQuote claudeConfigDirsPrefix commandLine; do
+        fn_source=$(extract_function "$name")
+        [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
+        command_functions+=$fn_source$'\n'
+    done
+    {
+        cat <<'QML'
+import QtQuick
+import QtTest
+
+Item {
+    property string codexbarCommand: "kodexbar-multi"
+    property bool includeStatus: false
+    property var claudeConfigDirs: []
+QML
+        printf '%s\n' "$command_functions"
+        cat <<'QML'
+    function commandFor(dirs) {
+        claudeConfigDirs = dirs
+        return commandLine("", "")
+    }
+
+    TestCase {
+        name: "commandLine"
+
+        function test_no_dirs_keeps_command_unchanged() {
+            compare(commandFor([]), "'kodexbar-multi' usage --format json --json-only")
+            compare(commandFor(undefined), "'kodexbar-multi' usage --format json --json-only")
+            compare(commandFor(["", "  "]), "'kodexbar-multi' usage --format json --json-only")
+        }
+
+        function test_dirs_are_appended_to_inherited_variable() {
+            compare(commandFor(["~/.claude-work", " ", " ~/.claude-personal "]),
+                "KODEXBAR_CLAUDE_CONFIG_DIRS=\"${KODEXBAR_CLAUDE_CONFIG_DIRS-};\"'~/.claude-work;~/.claude-personal' 'kodexbar-multi' usage --format json --json-only")
+        }
+
+        function test_dirs_are_shell_quoted() {
+            compare(commandFor(["~/it's"]),
+                "KODEXBAR_CLAUDE_CONFIG_DIRS=\"${KODEXBAR_CLAUDE_CONFIG_DIRS-};\"'~/it'\\''s' 'kodexbar-multi' usage --format json --json-only")
+        }
+
+        function test_separator_entries_are_dropped() {
+            compare(commandFor(["a;b", "~/ok"]),
+                "KODEXBAR_CLAUDE_CONFIG_DIRS=\"${KODEXBAR_CLAUDE_CONFIG_DIRS-};\"'~/ok' 'kodexbar-multi' usage --format json --json-only")
+            compare(commandFor(["a;b"]), "'kodexbar-multi' usage --format json --json-only")
+        }
+    }
+}
+QML
+    } >"$tmpdir/tst_command_line.qml"
+    QT_QPA_PLATFORM=offscreen "$qml_test_runner" -input "$tmpdir/tst_command_line.qml" >"$tmpdir/qmltest-command.out" 2>&1 \
+        || fail "commandLine Claude config dirs regression failed: $(cat "$tmpdir/qmltest-command.out")"
+
+    config_functions=""
+    for name in claudeConfigDirError addClaudeConfigDir removeClaudeConfigDir; do
+        fn_source=$(awk -v name="$name" '
+            $0 ~ "^    function " name "\\(" { capture = 1 }
+            capture { print }
+            capture && /^    \}$/ { exit }
+        ' "$root/contents/ui/config/configGeneral.qml")
+        [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/config/configGeneral.qml"
+        config_functions+=$fn_source$'\n'
+    done
+    {
+        cat <<'QML'
+import QtQuick
+import QtTest
+
+Item {
+    property var cfg_claudeConfigDirs: []
+    function i18n(text) { return text }
+QML
+        printf '%s\n' "$config_functions"
+        cat <<'QML'
+    TestCase {
+        name: "claudeConfigDirs"
+
+        function test_add_validates_and_remove_filters() {
+            cfg_claudeConfigDirs = []
+            verify(addClaudeConfigDir("~/.claude-work"))
+            verify(!addClaudeConfigDir("~/.claude-work"))
+            compare(claudeConfigDirError("~/.claude-work"), "This directory is already listed.")
+            verify(!addClaudeConfigDir("a;b"))
+            compare(claudeConfigDirError("a;b"), "Paths cannot contain \";\".")
+            verify(!addClaudeConfigDir(""))
+            verify(addClaudeConfigDir("~/.claude-personal"))
+            compare(cfg_claudeConfigDirs, ["~/.claude-work", "~/.claude-personal"])
+            removeClaudeConfigDir("~/.claude-work")
+            compare(cfg_claudeConfigDirs, ["~/.claude-personal"])
+        }
+    }
+}
+QML
+    } >"$tmpdir/tst_config_dirs.qml"
+    QT_QPA_PLATFORM=offscreen "$qml_test_runner" -input "$tmpdir/tst_config_dirs.qml" >"$tmpdir/qmltest-config.out" 2>&1 \
+        || fail "Claude config dirs settings regression failed: $(cat "$tmpdir/qmltest-config.out")"
 
     cat >"$tmpdir/tst_display_order.qml" <<QML
 import QtQuick
@@ -1571,6 +1683,7 @@ QML
         || fail "aggregate card display regression failed: $(cat "$tmpdir/qmltest-display.out")"
 else
     printf 'WARN: qmltestrunner unavailable; candidateList and aggregate card display regressions fell back to structural checks\n' >&2
+    grep -q 'claudeConfigDirsPrefix(claudeConfigDirs)' <<<"$(extract_function commandLine)" || fail 'commandLine() no longer prefixes configured Claude directories'
     grep -q 'codexbar-multi' <<<"$candidate_source" || fail 'legacy aggregate basename no longer recognized in candidateList()'
     grep -q 'kodexbar-multi' <<<"$candidate_source" || fail 'bundled aggregate basename not recognized in candidateList()'
     grep -q 'deepseek' <<<"$(extract_function visibleEntries)" || fail 'visibleEntries() no longer hides DeepSeek in the aggregate'

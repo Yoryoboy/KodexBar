@@ -36,6 +36,7 @@ PlasmoidItem {
     property bool showCostSummary: Plasmoid.configuration.showCostSummary === undefined ? true : Plasmoid.configuration.showCostSummary
     property int refreshSeconds: Math.max(10, Plasmoid.configuration.refreshInterval || 60)
     property var hiddenAccounts: Plasmoid.configuration.hiddenAccounts || []
+    property var claudeConfigDirs: Plasmoid.configuration.claudeConfigDirs || []
     property string selectedEntryKey: ""
     // Explicit card clicks keep their own state: automatic newest-activity
     // selection must never read as a manual choice. The pin lasts for the widget
@@ -864,8 +865,25 @@ PlasmoidItem {
         return candidate.toISOString()
     }
 
+    // Settings directories are appended to any inherited KODEXBAR_CLAUDE_CONFIG_DIRS;
+    // the wrapper skips the empty and repeated entries this union can produce.
+    function claudeConfigDirsPrefix(dirs) {
+        var valid = []
+        var list = dirs || []
+        for (var i = 0; i < list.length; i++) {
+            var dir = String(list[i]).trim()
+            if (dir.length > 0 && !/[;\n]/.test(dir)) {
+                valid.push(dir)
+            }
+        }
+        if (valid.length === 0) {
+            return ""
+        }
+        return "KODEXBAR_CLAUDE_CONFIG_DIRS=\"${KODEXBAR_CLAUDE_CONFIG_DIRS-};\"" + shellQuote(valid.join(";")) + " "
+    }
+
     function commandLine(provider, source) {
-        var command = shellQuote(codexbarCommand) + " usage --format json --json-only"
+        var command = claudeConfigDirsPrefix(claudeConfigDirs) + shellQuote(codexbarCommand) + " usage --format json --json-only"
         if (provider && provider !== "detect") {
             command += " --provider " + shellQuote(provider)
         }

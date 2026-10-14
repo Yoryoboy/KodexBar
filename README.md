@@ -79,11 +79,16 @@ Claude Code subscription usage is read through the upstream CLI with an explicit
 
 When cached usage is returned after a rate limit, the card shows `Cached <local time>` on its own line below the email, so a stale card still identifies its account. The detail panel shows `Cached since <local date-time> — Claude usage endpoint rate limited`; the footer's `Checked` time refers to the widget fetch, not the cached value.
 
-For multiple Claude accounts, the aggregate queries `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` first, then the semicolon-separated directories in `KODEXBAR_CLAUDE_CONFIG_DIRS`, in listed order. Empty entries, repeated paths, and non-existent extra directories are skipped; leading `~` or `~/` expands to your home directory. To add an account:
+For multiple Claude accounts, the aggregate queries `${CLAUDE_CONFIG_DIR:-$HOME/.claude}` first, then the semicolon-separated directories in `KODEXBAR_CLAUDE_CONFIG_DIRS`, in listed order. Empty entries, repeated paths, and non-existent extra directories are skipped; leading `~` or `~/` expands to your home directory. To add an account, log in once in its own directory:
 
 ```sh
 CLAUDE_CONFIG_DIR=~/.claude-work claude
 # In Claude Code, run /login for the additional account, then exit.
+```
+
+Then add `~/.claude-work` under **Claude accounts** in the widget settings (right-click the widget → Configure). The settings list is appended after any `KODEXBAR_CLAUDE_CONFIG_DIRS` already in the environment, so both sources work together; paths containing `;` are rejected because `;` is the separator. Alternatively, set the variable yourself:
+
+```sh
 export KODEXBAR_CLAUDE_CONFIG_DIRS='~/.claude-work;~/.claude-personal'
 ```
 

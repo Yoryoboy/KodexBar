@@ -50,6 +50,9 @@
     <entry name="hiddenAccounts" type="StringList">
       <default></default>
     </entry>
+    <entry name="claudeConfigDirs" type="StringList">
+      <default></default>
+    </entry>
     <entry name="showCostSummary" type="Bool">
       <default>true</default>
     </entry>

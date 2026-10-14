@@ -38,6 +38,35 @@ KCM.SimpleKCM {
     property var cfg_hiddenAccounts: []
     property var cfg_hiddenAccountsDefault
 
+    property var cfg_claudeConfigDirs: []
+    property var cfg_claudeConfigDirsDefault
+
+    // The wrapper splits KODEXBAR_CLAUDE_CONFIG_DIRS on ";", so such paths are rejected.
+    function claudeConfigDirError(dir) {
+        if (dir.length === 0) {
+            return ""
+        }
+        if (/[;\n]/.test(dir)) {
+            return i18n("Paths cannot contain \";\".")
+        }
+        if ((cfg_claudeConfigDirs || []).indexOf(dir) !== -1) {
+            return i18n("This directory is already listed.")
+        }
+        return ""
+    }
+
+    function addClaudeConfigDir(dir) {
+        if (dir.length === 0 || claudeConfigDirError(dir).length > 0) {
+            return false
+        }
+        cfg_claudeConfigDirs = (cfg_claudeConfigDirs || []).concat([dir])
+        return true
+    }
+
+    function removeClaudeConfigDir(dir) {
+        cfg_claudeConfigDirs = (cfg_claudeConfigDirs || []).filter(function(value) { return value !== dir })
+    }
+
     function showHiddenAccount(key) {
         cfg_hiddenAccounts = (cfg_hiddenAccounts || []).filter(function(value) { return value !== key })
     }
@@ -252,6 +281,73 @@ KCM.SimpleKCM {
                     id: showCostSummary
                     text: i18n("Show local cost summary")
                 }
+            }
+
+            Kirigami.Separator {
+                Layout.fillWidth: true
+            }
+
+            Kirigami.Heading {
+                text: i18n("Claude accounts")
+                level: 3
+                Layout.fillWidth: true
+            }
+
+            PlasmaComponents.Label {
+                text: i18n("Extra Claude Code config directories, queried after the default account. Log in to each one first with: CLAUDE_CONFIG_DIR=<dir> claude")
+                color: Kirigami.Theme.disabledTextColor
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
+            }
+
+            Repeater {
+                model: page.cfg_claudeConfigDirs || []
+                delegate: RowLayout {
+                    required property string modelData
+                    Layout.fillWidth: true
+
+                    PlasmaComponents.Label {
+                        text: modelData
+                        wrapMode: Text.WrapAnywhere
+                        Layout.fillWidth: true
+                    }
+
+                    QQC2.Button {
+                        text: i18n("Remove")
+                        onClicked: page.removeClaudeConfigDir(modelData)
+                    }
+                }
+            }
+
+            RowLayout {
+                Layout.fillWidth: true
+
+                QQC2.TextField {
+                    id: claudeConfigDirInput
+                    placeholderText: "~/.claude-work"
+                    Layout.fillWidth: true
+                    onAccepted: addClaudeConfigDirButton.clicked()
+                }
+
+                QQC2.Button {
+                    id: addClaudeConfigDirButton
+                    text: i18n("Add")
+                    enabled: claudeConfigDirInput.text.trim().length > 0
+                        && page.claudeConfigDirError(claudeConfigDirInput.text.trim()).length === 0
+                    onClicked: {
+                        if (page.addClaudeConfigDir(claudeConfigDirInput.text.trim())) {
+                            claudeConfigDirInput.text = ""
+                        }
+                    }
+                }
+            }
+
+            PlasmaComponents.Label {
+                text: page.claudeConfigDirError(claudeConfigDirInput.text.trim())
+                visible: text.length > 0
+                color: Kirigami.Theme.negativeTextColor
+                wrapMode: Text.WordWrap
+                Layout.fillWidth: true
             }
 
             Kirigami.Separator {
