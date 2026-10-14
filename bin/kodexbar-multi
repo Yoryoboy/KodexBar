@@ -375,6 +375,31 @@ if (( has_provider == 0 )); then
     successes=0
     outputs=()
     original_args=("$@")
+    failure_log=${XDG_STATE_HOME:-$HOME/.local/state}/kodexbar/last-failure.log
+
+    # Collect each failed provider's exit code and stderr; the temporary
+    # directory is removed on exit, so this is the only evidence that survives.
+    record_failure() {
+        local name=$1 status=$2 stderr_file=$3 note=${4-}
+        {
+            printf '== %s (exit %s) ==\n' "$name" "$status"
+            [[ -z $note ]] || printf '%s\n' "$note"
+            [[ ! -s $stderr_file ]] || cat "$stderr_file"
+        } >>"$tmpdir/failures.log"
+    }
+
+    # Replace the previous log atomically and keep it private: provider
+    # stderr may name accounts or local paths.
+    write_failure_log() {
+        [[ -s $tmpdir/failures.log ]] || return 0
+        local directory=${failure_log%/*} staged
+        mkdir -p "$directory" 2>/dev/null || return 0
+        staged=$(umask 077 && mktemp "$directory/.last-failure.XXXXXX" 2>/dev/null) || return 0
+        {
+            printf 'kodexbar-multi failure at %s\n' "$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            cat "$tmpdir/failures.log"
+        } >"$staged" && chmod 600 "$staged" && mv -fT "$staged" "$failure_log" 2>/dev/null || rm -f "$staged"
+    }
 
     run_provider() {
         local name=$1 output=$tmpdir/$1.json
@@ -389,8 +414,14 @@ if (( has_provider == 0 )); then
             fi
             return 0
         fi
-        if run_bounded "$upstream" "${original_args[@]}" --format json --json-only "$@" >"$output" 2>"$tmpdir/$name.stderr" \
-            && jq -e . "$output" >/dev/null 2>&1; then
+        local status=0
+        run_bounded "$upstream" "${original_args[@]}" --format json --json-only "$@" >"$output" 2>"$tmpdir/$name.stderr" || status=$?
+        if (( status != 0 )); then
+            record_failure "$name" "$status" "$tmpdir/$name.stderr"
+        elif ! jq -e . "$output" >/dev/null 2>&1; then
+            printf 'invalid JSON output\n' >>"$tmpdir/$name.stderr"
+            record_failure "$name" 0 "$tmpdir/$name.stderr"
+        else
             if [[ $name == deepseek ]]; then
                 jq 'def money: gsub("[, $]"; "") | tonumber;
                     def normalized:
@@ -430,7 +461,8 @@ if (( has_provider == 0 )); then
             claude_identity=$HOME/.claude.json
         fi
         claude_query_start=$(date +%s)
-        if ! (
+        claude_status=0
+        (
             # Setting the implicit default changes Claude's state-file location.
             if [[ $claude_identity == "$HOME/.claude.json" ]]; then
                 unset CLAUDE_CONFIG_DIR
@@ -438,10 +470,16 @@ if (( has_provider == 0 )); then
                 export CLAUDE_CONFIG_DIR="$claude_dir"
             fi
             run_bounded "$upstream" "${original_args[@]}" --format json --json-only --provider claude --source cli
-        ) </dev/null >"$claude_output" 2>"$claude_output.stderr"; then
+        ) </dev/null >"$claude_output" 2>"$claude_output.stderr" || claude_status=$?
+        if (( claude_status != 0 )); then
+            record_failure "claude-$((claude_index - 1))" "$claude_status" "$claude_output.stderr" "config dir: $claude_dir"
             continue
         fi
-        claude_entry_valid "$claude_output" || continue
+        if ! claude_entry_valid "$claude_output"; then
+            printf 'no usable Claude usage in output\n' >>"$claude_output.stderr"
+            record_failure "claude-$((claude_index - 1))" 0 "$claude_output.stderr" "config dir: $claude_dir"
+            continue
+        fi
         # Claude silently returns cached usage on rate limits. Read only the cache
         # timestamp; a missing/malformed state or timestamp never invalidates usage.
         claude_cached_at=$(jq -r --argjson start "$claude_query_start" '
@@ -479,8 +517,9 @@ if (( has_provider == 0 )); then
         successes=$((successes + 1))
     done < <(claude_config_dirs)
 
+    write_failure_log
     if (( successes == 0 )); then
-        printf 'kodexbar-multi: all provider usage queries failed; check codexbar credentials and KODEXBAR_CODEXBAR_COMMAND\n' >&2
+        printf 'kodexbar-multi: all provider usage queries failed; check codexbar credentials and KODEXBAR_CODEXBAR_COMMAND; see %s\n' "$failure_log" >&2
         exit 1
     fi
     jq -s '[.[] | if type == "array" then .[] else . end]' "${outputs[@]}" || {

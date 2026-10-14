@@ -12,6 +12,8 @@ PlasmoidItem {
     property var entries: []
     property string errorMessage: ""
     property string errorDetail: ""
+    // A single failure while older usage is still shown is a warning, not an error.
+    property bool errorIsWarning: false
     property string generatedAt: ""
     property bool loading: false
     property int consecutiveFailures: 0
@@ -920,6 +922,49 @@ PlasmoidItem {
         return hasUsableEntries(previousEntries) ? previousEntries : failedEntries
     }
 
+    // When older usage is kept, say so and surface the candidates' real errors
+    // instead of the generic reason, which would otherwise be lost.
+    function failedRefreshBanner(hadUsableEntries, checkedAt, message, detail, failed, failures) {
+        if (!hadUsableEntries) {
+            return { message: message, detail: detail, warning: false }
+        }
+        var maxLines = 3
+        var maxLength = 300
+        var lines = []
+        var seen = []
+        var hiddenCount = 0
+        for (var i = 0; i < (failed || []).length; i++) {
+            var text = String(failed[i].errorMessage || "").replace(/\s+/g, " ").trim()
+            if (text.length === 0) {
+                continue
+            }
+            var line = failed[i].provider ? failed[i].provider + ": " + text : text
+            if (line.length > maxLength) {
+                line = line.slice(0, maxLength - 1) + "…"
+            }
+            if (seen.indexOf(line) !== -1) {
+                continue
+            }
+            seen.push(line)
+            if (lines.length < maxLines) {
+                lines.push(line)
+            } else {
+                hiddenCount += 1
+            }
+        }
+        if (hiddenCount > 0) {
+            lines.push(i18n("+%1 more", hiddenCount))
+        }
+        if (lines.length === 0) {
+            lines.push(detail ? message + ": " + detail : message)
+        }
+        return {
+            message: i18n("Last refresh failed — showing data from %1", checkedAt),
+            detail: lines.join("\n"),
+            warning: failures < 2
+        }
+    }
+
     function finishFailedRefresh(message, detail) {
         refreshWatchdog.stop()
         loading = false
@@ -929,8 +974,11 @@ PlasmoidItem {
         if (!hadUsableEntries) {
             generatedAt = new Date().toLocaleString(Qt.locale(), Locale.ShortFormat)
         }
-        errorMessage = message
-        errorDetail = detail
+        var banner = failedRefreshBanner(hadUsableEntries, generatedAt, message, detail,
+            failedCandidates, consecutiveFailures)
+        errorMessage = banner.message
+        errorDetail = banner.detail
+        errorIsWarning = banner.warning
     }
 
     function abortRefresh() {
@@ -1879,7 +1927,7 @@ PlasmoidItem {
             PlasmaComponents.Label {
                 visible: root.errorMessage.length > 0
                 text: root.errorDetail.length > 0 ? root.errorMessage + "\n" + root.errorDetail : root.errorMessage
-                color: Kirigami.Theme.negativeTextColor
+                color: root.errorIsWarning ? Kirigami.Theme.neutralTextColor : Kirigami.Theme.negativeTextColor
                 wrapMode: Text.WordWrap
                 Layout.fillWidth: true
             }

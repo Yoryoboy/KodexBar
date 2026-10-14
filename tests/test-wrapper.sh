@@ -19,8 +19,8 @@ printf '%s\n' "$*" >>"$FAKE_LOG"
 if [[ -n ${FAKE_SLEEP_PROVIDER-} && $* == *"--provider $FAKE_SLEEP_PROVIDER"* ]]; then
     sleep "${FAKE_SLEEP_SECONDS:-8}"
 fi
-if [[ ${FAKE_MODE:-normal} == fail-all ]]; then exit 1; fi
-if [[ ${FAKE_MODE:-normal} == partial && $* == *"--provider opencodego"* ]]; then exit 1; fi
+if [[ ${FAKE_MODE:-normal} == fail-all ]]; then printf 'fake upstream failure: %s\n' "$*" >&2; exit 1; fi
+if [[ ${FAKE_MODE:-normal} == partial && $* == *"--provider opencodego"* ]]; then printf 'opencodego: HTTP 503\n' >&2; exit 3; fi
 if [[ $* == *"--provider codex"* ]]; then
     if [[ ${FAKE_MODE:-normal} == auto-codex && -n ${CODEX_HOME-} ]]; then
         if [[ ${FAKE_MODE_AUTO_RESULT:-match} == ambiguous ]]; then
@@ -557,6 +557,68 @@ assert grep -q "all provider usage queries failed" "$tmpdir/all.err"
 # The all-provider failure includes Claude: it was queried with the explicit CLI source.
 assert grep -q -- "--provider claude --source cli" "$log"
 unset FAKE_MODE
+
+# Failure evidence survives the run: per-provider stderr and exit codes are kept
+# in a private state log that the next failing run replaces.
+export XDG_STATE_HOME=$tmpdir/xdg-state
+failure_log=$XDG_STATE_HOME/kodexbar/last-failure.log
+export FAKE_MODE=fail-all
+if "$wrapper" usage --format json --json-only >"$tmpdir/all.out" 2>"$tmpdir/all.err"; then fail 'all-provider failure returned success'; fi
+assert grep -Fq "see $failure_log" "$tmpdir/all.err"
+assert test -f "$failure_log"
+[[ $(stat -c %a "$failure_log") == 600 ]] || fail 'failure log must be private (mode 600)'
+for provider in codex opencode deepseek claude-0; do
+    assert grep -Fq "== $provider (exit 1) ==" "$failure_log"
+done
+assert grep -Fq -- 'fake upstream failure: usage --format json --json-only --format json --json-only --provider deepseek --source api' "$failure_log"
+assert grep -Fq -- 'fake upstream failure: usage --format json --json-only --format json --json-only --provider claude --source cli' "$failure_log"
+if grep -q '== nan' "$failure_log"; then fail 'a missing NaN CLI is not a provider failure'; fi
+export FAKE_MODE=partial
+out=$("$wrapper" usage --format json --json-only 2>"$tmpdir/partial.err")
+assert_json 'length == 4' "$out"
+assert grep -Fq '== opencode (exit 3) ==' "$failure_log"
+assert grep -Fq 'opencodego: HTTP 503' "$failure_log"
+if grep -q 'fake upstream failure' "$failure_log"; then fail 'the next failing run must replace the previous log'; fi
+assert test ! -s "$tmpdir/partial.err"
+unset FAKE_MODE
+before=$(cat "$failure_log")
+out=$("$wrapper" usage --format json --json-only)
+[[ $(cat "$failure_log") == "$before" ]] || fail 'a fully successful run must keep the last failure log'
+if ls "$XDG_STATE_HOME/kodexbar" | grep -v '^last-failure.log$' | grep -q .; then fail 'failure log writes must not leave temporary files'; fi
+unset XDG_STATE_HOME
+
+# A directory symlink must not turn the final rename into a move-inside.
+(
+    export XDG_STATE_HOME=$tmpdir/symlink-state
+    export FAKE_MODE=partial
+    failure_log=$XDG_STATE_HOME/kodexbar/last-failure.log
+    destination=$tmpdir/symlink-log-destination
+    mkdir -p "${failure_log%/*}" "$destination"
+    ln -s "$destination" "$failure_log"
+    out=$("$wrapper" usage --format json --json-only 2>"$tmpdir/symlink-log.err")
+    assert_json 'length == 4' "$out"
+    assert test ! -s "$tmpdir/symlink-log.err"
+    assert test -z "$(find "$destination" -mindepth 1 -print -quit)"
+    assert test -z "$(find "${failure_log%/*}" -name '.last-failure.*' -print -quit)"
+) || exit 1
+
+# Diagnostic storage failure must not alter aggregate output or status.
+(
+    export XDG_STATE_HOME=$tmpdir/blocked-state
+    printf 'unchanged\n' >"$XDG_STATE_HOME"
+    before=$(sha256sum "$XDG_STATE_HOME")
+    export FAKE_MODE=partial
+    out=$("$wrapper" usage --format json --json-only 2>"$tmpdir/blocked-partial.err")
+    assert_json 'length == 4' "$out"
+    assert test ! -s "$tmpdir/blocked-partial.err"
+    export FAKE_MODE=fail-all
+    status=0
+    "$wrapper" usage --format json --json-only >"$tmpdir/blocked-all.out" 2>"$tmpdir/blocked-all.err" || status=$?
+    assert test "$status" = 1
+    assert test ! -s "$tmpdir/blocked-all.out"
+    assert grep -Fq "; see $XDG_STATE_HOME/kodexbar/last-failure.log" "$tmpdir/blocked-all.err"
+    assert test "$(sha256sum "$XDG_STATE_HOME")" = "$before"
+) || exit 1
 export XDG_DATA_HOME=$tmpdir/missing-data
 out=$("$wrapper" usage --format json --json-only)
 assert_json 'all(.[]; (.activity == null) or (.provider != "opencodego"))' "$out"
@@ -691,7 +753,7 @@ extract_function() {
 }
 assert grep -Fq 'toolTipSubText: tooltipLines(compactEntry(), Date.now()).join("\n")' "$root/contents/ui/main.qml"
 display_functions=""
-for name in cardAccessibleName tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey cycledEntryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in cardAccessibleName tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh failedRefreshBanner hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey cycledEntryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -1216,6 +1278,56 @@ $display_functions
             compare(resolveFailedRefresh(failed, []), [])
             compare(good.length, 1)
             compare(failed.length, 1)
+        }
+
+        function test_failed_refresh_banner_keeps_stale_usage() {
+            var failed = [
+                { provider: "", errorMessage: "kodexbar-multi: all provider usage queries failed; see /state/last-failure.log" },
+                { provider: "claude", errorMessage: "Rate limited" },
+                { provider: "claude", errorMessage: "Rate limited" }
+            ]
+            var banner = failedRefreshBanner(true, "14/10/26 10:16", "No usable CodexBar provider found",
+                "Configure a Linux-capable provider or choose a specific provider/source.", failed, 1)
+            compare(banner.message, "Last refresh failed — showing data from 14/10/26 10:16")
+            compare(banner.detail, "kodexbar-multi: all provider usage queries failed; see /state/last-failure.log\nclaude: Rate limited")
+            compare(banner.warning, true)
+            // A repeated failure is no longer a transient blip.
+            compare(failedRefreshBanner(true, "t", "m", "d", failed, 2).warning, false)
+            compare(failed.length, 3)
+        }
+
+        function test_failed_refresh_banner_falls_back_to_reason() {
+            var timeout = failedRefreshBanner(true, "10:16", "Refresh timed out",
+                "The refresh exceeded five minutes. Last available usage is shown.", [], 1)
+            compare(timeout.message, "Last refresh failed — showing data from 10:16")
+            compare(timeout.detail, "Refresh timed out: The refresh exceeded five minutes. Last available usage is shown.")
+            var long = failedRefreshBanner(true, "t", "m", "", [{ provider: "codex", errorMessage: new Array(400).join("x") }], 1)
+            compare(long.detail.length, 300)
+            compare(failedRefreshBanner(true, "t", "m", "", [{ provider: "codex", errorMessage: " line one\nline two " }], 1).detail,
+                "codex: line one line two")
+            compare(long.detail.slice(-1), "…")
+            var many = []
+            for (var i = 0; i < 5; i++) {
+                many.push({ provider: "p" + i, errorMessage: "e" })
+            }
+            compare(failedRefreshBanner(true, "t", "m", "", many, 1).detail, "p0: e\np1: e\np2: e\n+2 more")
+        }
+
+        function test_failed_refresh_banner_dedupes_hidden_errors() {
+            var failed = []
+            var messages = ["a", "b", "c", "d", "d"]
+            for (var i = 0; i < messages.length; i++) {
+                failed.push({ provider: "p", errorMessage: messages[i] })
+            }
+            compare(failedRefreshBanner(true, "t", "m", "", failed, 1).detail, "p: a\np: b\np: c\n+1 more")
+        }
+
+        function test_failed_refresh_banner_without_previous_usage() {
+            var banner = failedRefreshBanner(false, "10:16", "No usable CodexBar provider found",
+                "Configure a Linux-capable provider or choose a specific provider/source.", [], 1)
+            compare(banner.message, "No usable CodexBar provider found")
+            compare(banner.detail, "Configure a Linux-capable provider or choose a specific provider/source.")
+            compare(banner.warning, false)
         }
 
         function init() {
