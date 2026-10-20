@@ -174,12 +174,20 @@ PlasmoidItem {
 
     // Copy missing usable entries without mutating either input. Their age is
     // measured from the last successful fetch, never from the failed query.
+    // An account that answered through a different source is still the same
+    // account, so identity ignores the source whenever an account is known.
+    function carryForwardKey(entry) {
+        return String(entry.account || "").length > 0
+            ? String(entry.provider || "provider") + "|" + String(entry.account)
+            : entryKey(entry)
+    }
+
     function carryForwardEntries(previous, fresh, nowMs) {
         var result = fresh.slice()
-        var keys = fresh.map(function(entry) { return entryKey(entry) })
+        var keys = fresh.map(function(entry) { return carryForwardKey(entry) })
         for (var i = 0; i < previous.length; i++) {
             var entry = previous[i]
-            if (!isUsableEntry(entry) || keys.indexOf(entryKey(entry)) !== -1) {
+            if (!isUsableEntry(entry) || keys.indexOf(carryForwardKey(entry)) !== -1) {
                 continue
             }
             var since = entry.staleSince !== undefined ? entry.staleSince : entry.fetchedAt
@@ -190,7 +198,7 @@ PlasmoidItem {
             copy.stale = true
             copy.staleSince = since
             result.push(copy)
-            keys.push(entryKey(entry))
+            keys.push(carryForwardKey(entry))
         }
         return result
     }
