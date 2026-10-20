@@ -753,7 +753,7 @@ extract_function() {
 }
 assert grep -Fq 'toolTipSubText: tooltipLines(compactEntry(), Date.now()).join("\n")' "$root/contents/ui/main.qml"
 display_functions=""
-for name in cardAccessibleName tooltipTitle tooltipLines formatResetTime carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh failedRefreshBanner hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey cycledEntryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
+for name in cardAccessibleName tooltipTitle tooltipLines formatResetTime carryForwardKey carryForwardEntries checkedLabel backoffIntervalSeconds shouldSkipTimedRefresh resolveFailedRefresh failedRefreshBanner hasUsableEntries hiddenAccountKey isHiddenEntry withHiddenAccount withoutHiddenAccount panelText formatCredits isAggregateView visibleEntries allEntriesHidden entryKey cycledEntryKey selectedEntry clickEntry pinnedEntry clearMissingPin isUsableEntry activityTime compactEntry compactIdentity providerAccountKey providerAccountNumber usedPercent maxUsedPercent usageLevel compactLabelColor keepSelectionValid cardsRowWidth cardsRowOverflows cardsPerRow cardsRowCount cardsGridHeight cardHeight popupWidthForCards cachedLabel cachedDetailLabel cardSecondaryLines normalizeEntry providerName windowTitle percentLeft displayPercentLeft resetAt windowDetail providerCostRow dashboardSummary nanQuotaRows nanTokenRows formatNumber formatCurrency formatTokenCount formatQuotaTimestamp; do
     fn_source=$(extract_function "$name")
     [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
     display_functions+=$fn_source$'\n'
@@ -1189,6 +1189,20 @@ $display_functions
             compare(result.length, 1)
             compare(result[0], fresh[0])
             verify(!result[0].stale)
+        }
+
+        function test_carry_same_account_new_source() {
+            var old = usable("same", 1000)
+            var fresh = [usable("same", 2000)]
+            fresh[0].source = "oauth"
+            var result = carryForwardEntries([old], fresh, 2000)
+            compare(result.length, 1)
+            compare(result[0], fresh[0])
+            // Entries without an account still fall back to the full entry key.
+            var bare = usable("", 1000)
+            var other = usable("", 2000)
+            other.source = "oauth"
+            compare(carryForwardEntries([bare], [other], 2000).length, 2)
         }
 
         function test_carry_preserves_since_and_expires() {
