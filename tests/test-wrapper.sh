@@ -1198,10 +1198,14 @@ $display_functions
             var result = carryForwardEntries([old], fresh, 2000)
             compare(result.length, 1)
             compare(result[0], fresh[0])
-            // Entries without an account still fall back to the full entry key.
+            // An account-less provider (OpenCode Go: local -> local+api) is the
+            // same single entry; a different provider is still carried forward.
             var bare = usable("", 1000)
+            bare.source = "local"
             var other = usable("", 2000)
-            other.source = "oauth"
+            other.source = "local+api"
+            compare(carryForwardEntries([bare], [other], 2000).length, 1)
+            other.provider = "opencodego"
             compare(carryForwardEntries([bare], [other], 2000).length, 2)
         }
 

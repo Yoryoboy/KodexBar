@@ -175,11 +175,10 @@ PlasmoidItem {
     // Copy missing usable entries without mutating either input. Their age is
     // measured from the last successful fetch, never from the failed query.
     // An account that answered through a different source is still the same
-    // account, so identity ignores the source whenever an account is known.
+    // account, so identity never includes the source. Providers without an
+    // account report a single entry and match by provider alone.
     function carryForwardKey(entry) {
-        return String(entry.account || "").length > 0
-            ? String(entry.provider || "provider") + "|" + String(entry.account)
-            : entryKey(entry)
+        return String(entry.provider || "provider") + "|" + String(entry.account || "")
     }
 
     function carryForwardEntries(previous, fresh, nowMs) {
