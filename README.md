@@ -118,7 +118,7 @@ If you already know which provider works on your system, select it directly and 
 Run these before debugging the widget:
 
 ```sh
-codexbar usage --format json --json-only --provider all --source auto | python3 -m json.tool
+codexbar usage --format json --json-only --source auto | python3 -m json.tool
 codexbar usage --format json --json-only --provider codex --source oauth | python3 -m json.tool
 ```
 

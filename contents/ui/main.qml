@@ -359,11 +359,28 @@ PlasmoidItem {
         return candidate.toISOString()
     }
 
+    // Config IDs that differ from the CLI's --provider names. Older CLIs
+    // answer unknown names with the enabled providers instead of failing.
+    readonly property var cliProviderNames: ({
+        "abacus": "abacusai",
+        "alibaba": "alibaba-coding-plan",
+        "alibabatokenplan": "alibaba-token-plan",
+        "azureopenai": "azure-openai",
+        "groq": "groqcloud"
+    })
+
+    // "All enabled" omits the flag: --provider all queries every known
+    // provider, while the bare call honours the enabled toggles.
+    function providerArgument(provider) {
+        if (!provider || provider === "detect" || provider === "all") {
+            return ""
+        }
+        return " --provider " + shellQuote(cliProviderNames[provider] || provider)
+    }
+
     function commandLine(provider, source) {
         var command = shellQuote(codexbarCommand) + " usage --format json --json-only"
-        if (provider && provider !== "detect") {
-            command += " --provider " + shellQuote(provider)
-        }
+        command += providerArgument(provider)
         if (source && source !== "detect") {
             command += " --source " + shellQuote(source)
         }
@@ -374,11 +391,8 @@ PlasmoidItem {
     }
 
     function costCommandLine() {
-        var command = shellQuote(codexbarCommand) + " cost --format json --json-only"
-        if (selectedProvider && selectedProvider !== "detect") {
-            command += " --provider " + shellQuote(selectedProvider)
-        }
-        return command
+        return shellQuote(codexbarCommand) + " cost --format json --json-only"
+            + providerArgument(selectedProvider)
     }
 
     function shellQuote(value) {
@@ -488,8 +502,8 @@ PlasmoidItem {
             return result
         }
 
-        if (provider === "all" && source !== "detect") {
-            return [{ provider: "all", source: source }]
+        if (provider === "all") {
+            return [{ provider: "", source: source }]
         }
 
         return result.concat([
