@@ -2599,7 +2599,7 @@ PlasmoidItem {
             root.costLoading = false
             if (data["exit code"] && data["exit code"] !== 0 && !(data.stdout || "").length) {
                 if (root.isMissingCommand(data)) {
-                    root.costErrorMessage = ""
+                    root.costErrorMessage = i18n("CodexBar CLI not found")
                     root.costSummaries = ({})
                     root.applyCostSummaries()
                     return
