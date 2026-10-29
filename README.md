@@ -141,7 +141,8 @@ This variable selects only the executable to run; it does not configure an endpo
 - Use the refresh button in the popup to query the CLI immediately.
 - Open widget settings to change provider, source, refresh cadence, and compact label fields.
 - Leave Provider as `Best available` if you want KodexBar to find the first usable Linux-capable provider/source combination.
-- Choose `All enabled` to ask the CLI for all providers enabled in `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`.
+- Choose `All enabled` to ask the CLI for all providers enabled in `${XDG_CONFIG_HOME:-$HOME/.config}/codexbar/config.json`. It runs the CLI without `--provider`, so only enabled providers are queried, and never falls back to the provider probe list.
+- Provider IDs that differ from the CLI's `--provider` names (`abacus`, `alibaba`, `alibabatokenplan`, `azureopenai`, `groq`) are mapped to `abacusai`, `alibaba-coding-plan`, `alibaba-token-plan`, `azure-openai`, and `groqcloud` for usage and cost commands.
 
 Periodic refreshes never overlap: a timer tick is skipped while usage is loading. Settings changes restart the query; the Refresh button stays disabled while loading. A five-minute watchdog disconnects timed-out queries. Refreshes ending without usable usage data back off by ×2, ×4, then ×8 (capped at 30 minutes, never below the configured interval); a successful refresh resets the cadence. Failures keep the last usable cards and show a banner above them reading “Last refresh failed — showing data from <time>”, followed by up to three distinct provider errors (longer ones are truncated, the rest summarized as “+N more”). A single failure is shown in the neutral warning color; two or more consecutive failures turn it red. Without previous usable cards, the banner keeps the original error message and hint. Codex sign-out remains an actionable sign-in card, not a transient failure.
 
@@ -205,7 +206,7 @@ If you already know which provider works on your system, select it directly and 
 Run these before debugging the widget:
 
 ```sh
-codexbar usage --format json --json-only --provider all --source auto | python3 -m json.tool
+codexbar usage --format json --json-only --source auto | python3 -m json.tool
 codexbar usage --format json --json-only --provider codex --source oauth | python3 -m json.tool
 ```
 
@@ -246,6 +247,7 @@ Uninstall preserves an unrecognized user-owned `kodexbar-multi` or `nan-cloud-qu
 | Widget shows a CLI/runtime error | Install `codexbar`, set the full command path, or select a provider/source that works on Linux. |
 | Provider works in terminal but not in the widget | Use an absolute command path in settings if Plasma does not inherit your shell `PATH`. |
 | `Best available` picks the wrong provider | Select the provider explicitly in settings. |
+| Popup shows **CodexBar CLI not found** | The configured command is missing (exit code 127); `Best available` stops probing instead of showing one error per provider. Install `codexbar` or set its full path in widget settings. |
 | Status never appears | Enable **Fetch provider status** in widget settings. |
 | `kodexbar-multi` cannot find upstream CodexBar | Confirm `codexbar` is executable, or export `KODEXBAR_CODEXBAR_COMMAND` in the environment that launches Plasma. |
 | Only some aggregate providers appear | Check the unavailable provider's credentials/source; successful providers are intentionally preserved. |

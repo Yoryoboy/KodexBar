@@ -640,8 +640,12 @@ assert grep -q 'root.entries = root.carryForwardEntries(root.entries, updatedEnt
 for handler in onCodexbarCommandChanged onSelectedProviderChanged onSelectedSourceChanged; do
     handler_body=$(grep -A3 "$handler:" "$root/contents/ui/main.qml")
     assert grep -q 'entries = \[\]' <<<"$handler_body"
-    assert grep -q 'refresh()' <<<"$handler_body"
+    assert grep -q 'configRefreshDebounce.restart()' <<<"$handler_body"
 done
+# Plasma's startup burst of config notifications coalesces into one refresh.
+debounce_body=$(grep -A5 'id: configRefreshDebounce' "$root/contents/ui/main.qml")
+assert grep -q 'repeat: false' <<<"$debounce_body"
+assert grep -q 'onTriggered: root.refresh()' <<<"$debounce_body"
 if grep -q 'Updated %1' "$root/contents/ui/main.qml"; then
     fail 'footer must say Checked, not Updated'
 fi
@@ -800,6 +804,11 @@ $candidate_source
     TestCase {
         name: "candidateList"
 
+        function init() {
+            selectedProvider = "detect"
+            selectedSource = "detect"
+        }
+
         function test_bundled_aggregate_name() {
             var candidates = listFor("/home/user/.local/bin/kodexbar-multi")
             compare(candidates.length, 1)
@@ -814,17 +823,36 @@ $candidate_source
             compare(candidates[0].source, "")
         }
 
+        // Best available asks the CLI defaults first, then probes known providers.
         function test_upstream_fallback_preserved() {
             var candidates = listFor("codexbar")
-            verify(candidates.length > 1)
-            compare(candidates[0].provider, "codex")
-            compare(candidates[0].source, "cli")
+            verify(candidates.length > 2)
+            compare(candidates[0].provider, "")
+            compare(candidates[0].source, "")
+            compare(candidates[1].provider, "codex")
+            compare(candidates[1].source, "cli")
         }
 
         function test_similar_name_falls_back() {
             var candidates = listFor("kodexbar-multi-extra")
-            verify(candidates.length > 1)
-            compare(candidates[0].provider, "codex")
+            verify(candidates.length > 2)
+            compare(candidates[0].provider, "")
+            compare(candidates[1].provider, "codex")
+        }
+
+        // All enabled runs the bare call and never falls through to the probe list.
+        function test_all_enabled_runs_bare_call() {
+            selectedProvider = "all"
+            selectedSource = "detect"
+            var candidates = listFor("codexbar")
+            compare(candidates.length, 1)
+            compare(candidates[0].provider, "")
+            compare(candidates[0].source, "detect")
+            selectedSource = "cli"
+            candidates = listFor("codexbar")
+            compare(candidates.length, 1)
+            compare(candidates[0].provider, "")
+            compare(candidates[0].source, "cli")
         }
     }
 }
@@ -835,7 +863,7 @@ QML
     # Claude config directories from the widget settings prefix the usage command
     # so the aggregate sees them without a Plasma session environment variable.
     command_functions=""
-    for name in shellQuote claudeConfigDirsPrefix commandLine; do
+    for name in shellQuote claudeConfigDirsPrefix providerArgument commandLine costCommandLine; do
         fn_source=$(extract_function "$name")
         [[ -n $fn_source ]] || fail "function $name was not found in contents/ui/main.qml"
         command_functions+=$fn_source$'\n'
@@ -849,6 +877,7 @@ Item {
     property string codexbarCommand: "kodexbar-multi"
     property bool includeStatus: false
     property var claudeConfigDirs: []
+    property string selectedProvider: "detect"
 QML
         printf '%s\n' "$command_functions"
         cat <<'QML'
@@ -880,6 +909,34 @@ QML
             compare(commandFor(["a;b", "~/ok"]),
                 "KODEXBAR_CLAUDE_CONFIG_DIRS=\"${KODEXBAR_CLAUDE_CONFIG_DIRS-};\"'~/ok' 'kodexbar-multi' usage --format json --json-only")
             compare(commandFor(["a;b"]), "'kodexbar-multi' usage --format json --json-only")
+        }
+
+        // Config IDs that differ from the CLI's --provider names are mapped.
+        function test_provider_ids_map_to_cli_names() {
+            claudeConfigDirs = []
+            compare(commandLine("alibabatokenplan", "api"),
+                "'kodexbar-multi' usage --format json --json-only --provider 'alibaba-token-plan' --source 'api'")
+            compare(commandLine("abacus", ""), "'kodexbar-multi' usage --format json --json-only --provider 'abacusai'")
+            compare(commandLine("alibaba", ""), "'kodexbar-multi' usage --format json --json-only --provider 'alibaba-coding-plan'")
+            compare(commandLine("azureopenai", ""), "'kodexbar-multi' usage --format json --json-only --provider 'azure-openai'")
+            compare(commandLine("groq", ""), "'kodexbar-multi' usage --format json --json-only --provider 'groqcloud'")
+            compare(commandLine("codex", "cli"), "'kodexbar-multi' usage --format json --json-only --provider 'codex' --source 'cli'")
+        }
+
+        // All enabled omits --provider so the CLI honours its enabled toggles.
+        function test_all_enabled_omits_provider() {
+            claudeConfigDirs = []
+            compare(commandLine("all", "cli"), "'kodexbar-multi' usage --format json --json-only --source 'cli'")
+            compare(commandLine("detect", "detect"), "'kodexbar-multi' usage --format json --json-only")
+        }
+
+        function test_cost_command_uses_cli_names() {
+            selectedProvider = "groq"
+            compare(costCommandLine(), "'kodexbar-multi' cost --format json --json-only --provider 'groqcloud'")
+            selectedProvider = "all"
+            compare(costCommandLine(), "'kodexbar-multi' cost --format json --json-only")
+            selectedProvider = "detect"
+            compare(costCommandLine(), "'kodexbar-multi' cost --format json --json-only")
         }
     }
 }

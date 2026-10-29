@@ -654,7 +654,10 @@ PlasmoidItem {
 
     function panelText() {
         if (visibleEntries().length === 0) {
-            return loading ? i18n("Loading") : i18n("No data")
+            if (loading) {
+                return i18n("Loading")
+            }
+            return errorMessage.length > 0 ? i18n("Error") : i18n("No data")
         }
         var entry = compactEntry()
         if (!entry) {
@@ -891,11 +894,27 @@ PlasmoidItem {
         return "KODEXBAR_CLAUDE_CONFIG_DIRS=\"${KODEXBAR_CLAUDE_CONFIG_DIRS-};\"" + shellQuote(valid.join(";")) + " "
     }
 
+    // "All enabled" omits the flag: --provider all queries every known
+    // provider, while the bare call honours the enabled toggles. Config IDs
+    // that differ from the CLI's --provider names are mapped, because older
+    // CLIs answer unknown names with the enabled providers instead of failing.
+    function providerArgument(provider) {
+        if (!provider || provider === "detect" || provider === "all") {
+            return ""
+        }
+        var cliNames = {
+            "abacus": "abacusai",
+            "alibaba": "alibaba-coding-plan",
+            "alibabatokenplan": "alibaba-token-plan",
+            "azureopenai": "azure-openai",
+            "groq": "groqcloud"
+        }
+        return " --provider " + shellQuote(cliNames[provider] || provider)
+    }
+
     function commandLine(provider, source) {
         var command = claudeConfigDirsPrefix(claudeConfigDirs) + shellQuote(codexbarCommand) + " usage --format json --json-only"
-        if (provider && provider !== "detect") {
-            command += " --provider " + shellQuote(provider)
-        }
+        command += providerArgument(provider)
         if (source && source !== "detect") {
             command += " --source " + shellQuote(source)
         }
@@ -906,11 +925,8 @@ PlasmoidItem {
     }
 
     function costCommandLine() {
-        var command = shellQuote(codexbarCommand) + " cost --format json --json-only"
-        if (selectedProvider && selectedProvider !== "detect") {
-            command += " --provider " + shellQuote(selectedProvider)
-        }
-        return command
+        return shellQuote(codexbarCommand) + " cost --format json --json-only"
+            + providerArgument(selectedProvider)
     }
 
     function shellQuote(value) {
@@ -988,6 +1004,19 @@ PlasmoidItem {
         errorIsWarning = banner.warning
     }
 
+    function isMissingCommand(data) {
+        return data["exit code"] === 127
+            || String(data.stderr || "").indexOf("command not found") !== -1
+    }
+
+    // Every fallback runs the same binary, so a missing CLI ends the search.
+    function stopForMissingCommand() {
+        pendingCandidates = []
+        failedCandidates = []
+        finishFailedRefresh(i18n("CodexBar CLI not found"),
+            i18n("Install codexbar or set its full path in the widget settings. Command: %1", codexbarCommand))
+    }
+
     function abortRefresh() {
         if (!loading) {
             return
@@ -1051,11 +1080,11 @@ PlasmoidItem {
             return result
         }
 
-        if (provider === "all" && source !== "detect") {
-            return [{ provider: "all", source: source }]
+        if (provider === "all") {
+            return [{ provider: "", source: source }]
         }
 
-        return [
+        return result.concat([
             { provider: "codex", source: "cli" },
             { provider: "codex", source: "oauth" },
             { provider: "codex", source: "api" },
@@ -1087,7 +1116,7 @@ PlasmoidItem {
             { provider: "groq", source: "api" },
             { provider: "llmproxy", source: "api" },
             { provider: "deepgram", source: "api" }
-        ]
+        ])
     }
 
     function tryNextCandidate() {
@@ -1700,7 +1729,9 @@ PlasmoidItem {
             secondaryPercentLeft: providerKey === "deepseek" ? null : percentLeft(secondary),
             secondaryResetsAt: providerKey === "deepseek" ? null : resetAt(secondary),
             tertiaryPercentLeft: providerKey === "deepseek" ? null : percentLeft(tertiary),
-            creditsRemaining: credits ? credits.remaining : (typeof dashboard.creditsRemaining === "number" ? dashboard.creditsRemaining : null),
+            creditsRemaining: credits && !(credits.creditsAvailable === false && !credits.remaining)
+                ? credits.remaining
+                : (typeof dashboard.creditsRemaining === "number" ? dashboard.creditsRemaining : null),
             codeReviewRemainingPercent: typeof dashboard.codeReviewRemainingPercent === "number" ? dashboard.codeReviewRemainingPercent : null,
             dashboardSummary: dashboardSummary(dashboard),
             pace: entry.pace && typeof entry.pace === "object" ? entry.pace
@@ -2502,6 +2533,10 @@ PlasmoidItem {
             }
             disconnectSource(sourceName)
             if (data["exit code"] && data["exit code"] !== 0 && !(data.stdout || "").length) {
+                if (root.isMissingCommand(data)) {
+                    root.stopForMissingCommand()
+                    return
+                }
                 var errorEntry = root.normalizeEntry({
                     provider: root.activeProvider,
                     source: root.activeSource,
@@ -2563,6 +2598,12 @@ PlasmoidItem {
             disconnectSource(sourceName)
             root.costLoading = false
             if (data["exit code"] && data["exit code"] !== 0 && !(data.stdout || "").length) {
+                if (root.isMissingCommand(data)) {
+                    root.costErrorMessage = ""
+                    root.costSummaries = ({})
+                    root.applyCostSummaries()
+                    return
+                }
                 root.costErrorMessage = data.stderr || i18n("Cost scan failed with exit code %1", data["exit code"])
                 root.costSummaries = ({})
                 root.applyCostSummaries()
@@ -2606,22 +2647,31 @@ PlasmoidItem {
         clearMissingPin()
     }
 
+    // Plasma loads configuration values one by one at startup; coalesce the
+    // resulting change notifications into a single refresh.
+    Timer {
+        id: configRefreshDebounce
+        interval: 250
+        repeat: false
+        onTriggered: root.refresh()
+    }
+
     onRefreshSecondsChanged: {
         refreshTimer.restart()
-        refresh()
+        configRefreshDebounce.restart()
     }
 
     onCodexbarCommandChanged: {
         entries = []
-        refresh()
+        configRefreshDebounce.restart()
     }
     onSelectedProviderChanged: {
         entries = []
-        refresh()
+        configRefreshDebounce.restart()
     }
     onSelectedSourceChanged: {
         entries = []
-        refresh()
+        configRefreshDebounce.restart()
     }
     onShowCostSummaryChanged: refreshCost()
     onShowCreditsInPanelChanged: panelText()
